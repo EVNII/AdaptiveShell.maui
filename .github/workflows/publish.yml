@@ -9,12 +9,12 @@ permissions:
   id-token: write
   contents: read
 
+env:
+  DOTNET_NOLOGO: true
+
 jobs:
-  publish:
+  build-apple:
     runs-on: macos-15
-    environment: production
-    env:
-      DOTNET_NOLOGO: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,7 +25,69 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Install MAUI workloads
-        run: dotnet workload install maui
+        run: dotnet workload install maui-ios maui-maccatalyst
+
+      - name: Build iOS and MacCatalyst
+        run: |
+          dotnet build AdaptiveShell.csproj -c Release -p:TargetFrameworks="net10.0-ios26.5;net10.0-maccatalyst26.5"
+          for tfm in net10.0-ios26.5 net10.0-maccatalyst26.5; do
+            mkdir -p "staging/${tfm}"
+            cp "bin/Release/${tfm}/AdaptiveShell.dll" "bin/Release/${tfm}/AdaptiveShell.xml" "staging/${tfm}/"
+          done
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt-apple
+          path: staging/
+          retention-days: 1
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install MAUI workloads
+        run: dotnet workload install maui-windows
+
+      - name: Build Windows
+        run: dotnet build AdaptiveShell.csproj -c Release -p:TargetFrameworks=net10.0-windows10.0.19041.0
+
+      - name: Stage binaries
+        shell: pwsh
+        run: |
+          $tfm = 'net10.0-windows10.0.19041.0'
+          New-Item -ItemType Directory -Force "staging/$tfm" | Out-Null
+          Copy-Item "bin/Release/$tfm/AdaptiveShell.dll", "bin/Release/$tfm/AdaptiveShell.xml" "staging/$tfm/"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt-windows
+          path: staging/
+          retention-days: 1
+
+  pack-push:
+    runs-on: ubuntu-latest
+    needs: [build-apple, build-windows]
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install MAUI workloads
+        run: dotnet workload install maui-android
 
       - name: Resolve package version
         run: |
@@ -37,8 +99,64 @@ jobs:
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
           echo "Packing version ${VERSION}"
 
-      - name: Pack
-        run: dotnet pack AdaptiveShell.csproj -c Release -o artifacts -p:Version=${VERSION}
+      - name: Pack base package (Android)
+        run: dotnet pack AdaptiveShell.csproj -c Release -o pkg -p:Version=${VERSION}
+
+      - name: Download prebuilt binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: prebuilt-*
+          path: prebuilt
+          merge-multiple: true
+
+      - name: Merge platform binaries into package
+        run: |
+          python3 << 'EOF'
+          import copy, glob, os, shutil, zipfile
+          import xml.etree.ElementTree as ET
+
+          nupkg = glob.glob('pkg/*.nupkg')[0]
+          work = 'merge-work'
+          shutil.rmtree(work, ignore_errors=True)
+          with zipfile.ZipFile(nupkg) as z:
+              z.extractall(work)
+
+          NS = 'http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd'
+          ET.register_namespace('', NS)
+          nuspec_path = glob.glob(os.path.join(work, '*.nuspec'))[0]
+          tree = ET.parse(nuspec_path)
+          deps = tree.getroot().find(f'{{{NS}}}metadata/{{{NS}}}dependencies')
+
+          maui_dep = None
+          for g in deps.findall(f'{{{NS}}}group'):
+              for d in g.findall(f'{{{NS}}}dependency'):
+                  if d.get('id') == 'Microsoft.Maui.Controls':
+                      maui_dep = d
+          assert maui_dep is not None, 'Microsoft.Maui.Controls dependency not found'
+
+          existing = {g.get('targetFramework') for g in deps.findall(f'{{{NS}}}group')}
+          merged = []
+          for tfm in sorted(os.listdir('prebuilt')):
+              src = os.path.join('prebuilt', tfm)
+              if not os.path.isdir(src):
+                  continue
+              assert tfm not in existing, f'{tfm} already in package'
+              shutil.copytree(src, os.path.join(work, 'lib', tfm))
+              group = ET.SubElement(deps, f'{{{NS}}}group')
+              group.set('targetFramework', tfm)
+              group.append(copy.deepcopy(maui_dep))
+              merged.append(tfm)
+
+          tree.write(nuspec_path, encoding='utf-8', xml_declaration=True)
+
+          with zipfile.ZipFile(nupkg, 'w', zipfile.ZIP_DEFLATED) as z:
+              for root, _, files in os.walk(work):
+                  for f in files:
+                      p = os.path.join(root, f)
+                      z.write(p, os.path.relpath(p, work))
+
+          print(f'Merged {merged} into {nupkg}')
+          EOF
 
       - name: NuGet login (trusted publishing)
         id: login
@@ -47,4 +165,4 @@ jobs:
           user: ${{ vars.NUGET_USER }}
 
       - name: Push to NuGet.org
-        run: dotnet nuget push 'artifacts/*.nupkg' --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
+        run: dotnet nuget push 'pkg/*.nupkg' --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json

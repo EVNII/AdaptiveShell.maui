@@ -27,7 +27,7 @@
 
 		<!-- NuGet package metadata -->
 		<PackageId>AdaptiveShell.Maui</PackageId>
-		<Version>0.1.0</Version>
+		<Version>0.1.1</Version>
 		<Authors>EVNII</Authors>
 		<Description>Adaptive shell navigation for .NET MAUI: sidebar, rail and bottom navigation that adapt to platform, window size and navigation groups.</Description>
 		<PackageTags>maui;navigation;shell;adaptive;sidebar</PackageTags>
