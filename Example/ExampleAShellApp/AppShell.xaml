@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<a:AShell
+    x:Class="ExampleAShellApp.AppShell"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:local="clr-namespace:ExampleAShellApp"
+    xmlns:a="clr-namespace:AdaptiveShell.Controls;assembly=AdaptiveShell"
+    Title="ExampleAShellApp">
+
+    <!-- 小屏(<600)时 FullBleed=true 扩展铺满,大屏时收缩避让 -->
+    <a:AShellContent
+        Title="Home"
+        Icon="home.svg"
+        ContentTemplate="{DataTemplate local:MainPage}">
+        <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup>
+                <VisualState x:Name="Small">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="0" />
+                    </VisualState.StateTriggers>
+                    <VisualState.Setters>
+                        <Setter Property="FullBleed" Value="True" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="Large">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="600" />
+                    </VisualState.StateTriggers>
+                    <VisualState.Setters>
+                        <Setter Property="FullBleed" Value="False" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+    </a:AShellContent>
+
+    <a:AShellContent
+    Title="Home2"
+    Icon="favorite.svg"
+    ContentTemplate="{DataTemplate local:MainPage}"
+    />
+
+    <a:AShellGroup Title="媒体" Icon="folder.svg">
+        <a:AShellContent
+            Title="音乐"
+            Icon="star.svg"
+            ContentTemplate="{DataTemplate local:MainPage}"
+            />
+        <a:AShellContent
+            Title="相册"
+            Icon="star.svg"
+            ContentTemplate="{DataTemplate local:MainPage}"
+            />
+    </a:AShellGroup>
+</a:AShell>

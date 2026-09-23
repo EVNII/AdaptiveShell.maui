@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="AdaptiveShell.csproj" />
+  <Project Path="Example/ExampleAShellApp/ExampleAShellApp.csproj">
+    <Deploy Solution="Debug|*" />
+  </Project>
+</Solution>
