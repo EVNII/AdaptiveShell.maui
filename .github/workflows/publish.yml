@@ -30,7 +30,7 @@ jobs:
       - name: Build iOS and MacCatalyst
         run: |
           for tfm in net10.0-ios26.5 net10.0-maccatalyst26.5; do
-            dotnet build AdaptiveShell.csproj -c Release -f "${tfm}"
+            dotnet build AdaptiveShell.csproj -c Release -p:TargetFrameworks="${tfm}"
             mkdir -p "staging/${tfm}"
             cp "bin/Release/${tfm}/AdaptiveShell.dll" "bin/Release/${tfm}/AdaptiveShell.xml" "staging/${tfm}/"
           done
