@@ -29,6 +29,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Free disk space
+        # AVD userdata 需要 7.3G;去掉用不到的预装工具链腾空间。
+        # 注意必须在 setup-dotnet 之前(它会往 tool-cache 里装 SDK)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: false
+          dotnet: false
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -65,8 +78,6 @@ jobs:
           target: default
           arch: x86_64
           profile: ${{ matrix.profile }}
-          # runner 剩余空间 ~6G,默认 userdata 7.3G 建不出来(单位必须 MB,"4G" 不生效)
-          disk-size: 4096M
           disable-animations: true
           script: |
             npx appium > appium.log 2>&1 &
