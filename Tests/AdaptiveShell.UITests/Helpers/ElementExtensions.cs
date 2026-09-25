@@ -35,6 +35,10 @@ public static class ElementExtensions
         wait.IgnoreExceptionTypes(typeof(NoSuchElementException), typeof(NotFoundException));
         return (AppiumElement)wait.Until(d =>
         {
+            // 系统 ANR 弹窗(如启动器 "isn't responding")会挡住无障碍树,
+            // 等待期间顺手点掉,否则弹窗期间任何元素都找不到
+            DismissAnrDialogs(driver);
+
             foreach (var locator in locators)
             {
                 try
@@ -55,6 +59,24 @@ public static class ElementExtensions
 
             return null;
         })!;
+    }
+
+    public static void DismissAnrDialogs(AppiumDriver driver)
+    {
+        try
+        {
+            var buttons = driver.FindElements(
+                By.XPath("//*[@package='android' and @text='Wait']"));
+            foreach (var button in buttons)
+            {
+                button.Click();
+                Thread.Sleep(2000);
+            }
+        }
+        catch (Exception)
+        {
+            // 没有弹窗,或会话尚不可交互
+        }
     }
 
     public static AppiumElement? FindByAccessibilityIdOrDefault(

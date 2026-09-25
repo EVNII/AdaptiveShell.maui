@@ -26,12 +26,12 @@ public abstract class BaseTest
 
     // 等壳的首个导航项出现,说明首屏已渲染。
     // 资源紧张的模拟器上系统弹窗(如启动器 ANR "isn't responding")会挡住
-    // 无障碍树,期间周期性地把这类弹窗点掉再等
+    // 无障碍树,等待过程里由 WaitFor 轮询顺带点掉(见 ElementExtensions)
     void WaitForShell()
     {
         for (int attempt = 0; attempt < 6; attempt++)
         {
-            DismissAnrDialogs();
+            ElementExtensions.DismissAnrDialogs(Driver);
             try
             {
                 Driver.WaitForAccessibilityId("home", 30);
@@ -43,24 +43,6 @@ public abstract class BaseTest
         }
 
         Driver.WaitForAccessibilityId("home");
-    }
-
-    void DismissAnrDialogs()
-    {
-        try
-        {
-            var buttons = Driver.FindElements(
-                By.XPath("//*[@package='android' and @text='Wait']"));
-            foreach (var button in buttons)
-            {
-                button.Click();
-                Thread.Sleep(3000);
-            }
-        }
-        catch (Exception)
-        {
-            // 没有弹窗,或会话尚不可交互
-        }
     }
 
     [OneTimeTearDown]
