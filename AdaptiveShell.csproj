@@ -14,7 +14,7 @@
 
 
 		<DefaultItemExcludes>
-			$(DefaultItemExcludes);Example\**\*
+			$(DefaultItemExcludes);Example\**\*;Tests\**\*
 		</DefaultItemExcludes>
 
 		<!-- Enable XAML source generation for faster build times and improved performance.

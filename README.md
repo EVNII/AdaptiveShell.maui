@@ -61,6 +61,35 @@ Derive your app shell from `AShell` and declare navigation items in XAML:
 
 See `Example/ExampleAShellApp` for a full sample.
 
+## Accessibility
+
+`AShellItem.AutomationId` (falling back to `Title`) is projected onto the native navigation views on every platform — `accessibilityIdentifier` on iOS/Mac Catalyst, `content-desc` on Android, `AutomationProperties.AutomationId` on Windows — so navigation items have stable identifiers for assistive technologies and UI tests. Group landing-page rows are exposed as `landing-<id>`.
+
+## Testing
+
+E2E tests live in `Tests/AdaptiveShell.UITests`. They drive the example app through the accessibility tree via Appium — locators use accessibility identifiers, never screen coordinates.
+
+Prerequisites:
+
+- Node.js, then `npm i -g appium`
+- Drivers: `appium driver install uiautomator2 xcuitest mac2` (macOS) / `appium driver install windows` (Windows)
+
+Run locally:
+
+```bash
+# macOS: Android / iOS / Mac Catalyst
+Tests/AdaptiveShell.UITests/run-uitest.sh <android|ios|maccatalyst> [compact|wide]
+```
+
+```powershell
+# Windows
+Tests/AdaptiveShell.UITests/run-uitest.ps1
+```
+
+Configuration via environment variables: `UITEST_PLATFORM`, `UITEST_FORM` (`compact`|`wide`), `UITEST_APP_PATH`, `UITEST_DEVICE_NAME`, `UITEST_DEVICE_UDID`, `UITEST_APPIUM_URL`.
+
+CI (`.github/workflows/uitest.yml`) runs Android (phone + tablet emulator matrix), iOS and Windows on every push/PR; Mac Catalyst runs locally only.
+
 ## License
 
 [MIT](LICENSE)

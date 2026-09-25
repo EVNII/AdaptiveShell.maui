@@ -1,0 +1,184 @@
+name: UI Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  DOTNET_NOLOGO: true
+
+# Mac Catalyst 不在 CI 跑:Mac2 driver 需要辅助功能授权与已注册 app,
+# 在托管 runner 上不稳定,仅保留本地运行(见 Tests/AdaptiveShell.UITests/run-uitest.sh)
+
+jobs:
+  uitest-android:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: pixel_6      # 411dp 宽 -> 底部导航
+            form: compact
+          - profile: pixel_tablet # 宽屏 -> NavigationRail
+            form: wide
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install MAUI workloads
+        run: dotnet workload install maui-android
+
+      - name: Install Appium
+        run: |
+          npm i -g appium
+          appium driver install uiautomator2
+
+      - name: Build example app
+        # EmbedAssembliesIntoApk:Debug 默认 fast-deploy 包不含程序集,装到模拟器后启动即崩
+        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -f net10.0-android -p:EmbedAssembliesIntoApk=true
+
+      - name: Run UI tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: default
+          arch: arm64-v8a
+          profile: ${{ matrix.profile }}
+          disable-animations: true
+          script: |
+            npx appium > appium.log 2>&1 &
+            export UITEST_PLATFORM=android UITEST_FORM=${{ matrix.form }}
+            export UITEST_APP_PATH="$GITHUB_WORKSPACE/Example/ExampleAShellApp/bin/Debug/net10.0-android/com.companyname.exampleashellapp-Signed.apk"
+            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uitest-android-${{ matrix.form }}
+          path: |
+            TestResults/screenshots
+            appium.log
+          if-no-files-found: ignore
+
+  uitest-ios:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install MAUI workloads
+        run: dotnet workload install maui-ios
+
+      - name: Install Appium
+        run: |
+          npm i -g appium
+          appium driver install xcuitest
+
+      - name: Boot simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for runtimes in data['devices'].values():
+              for d in runtimes:
+                  if d['name'] == 'iPhone 16':
+                      print(d['udid']); break
+          ")
+          [ -n "$UDID" ] || { echo 'iPhone 16 simulator not found'; exit 1; }
+          xcrun simctl boot "$UDID" || true
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Build example app
+        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -f net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64
+
+      - name: Run UI tests
+        run: |
+          npx appium > appium.log 2>&1 &
+          export UITEST_PLATFORM=ios UITEST_FORM=compact
+          export UITEST_DEVICE_NAME="iPhone 16" UITEST_DEVICE_UDID="$UDID"
+          export UITEST_APP_PATH="$GITHUB_WORKSPACE/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app"
+          dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uitest-ios
+          path: |
+            TestResults/screenshots
+            appium.log
+          if-no-files-found: ignore
+
+  uitest-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install MAUI workloads
+        run: dotnet workload install maui-windows
+
+      - name: Install Appium
+        run: |
+          npm i -g appium
+          appium driver install --source npm appium-windows-driver
+
+      - name: Build example app
+        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -f net10.0-windows10.0.19041.0
+
+      - name: Run UI tests
+        shell: pwsh
+        run: |
+          Start-Process npx -ArgumentList "appium" `
+            -RedirectStandardOutput appium.log -RedirectStandardError appium.err.log `
+            -WindowStyle Hidden
+          Start-Sleep -Seconds 10
+          $exe = Get-ChildItem "Example/ExampleAShellApp/bin/Debug/net10.0-windows10.0.19041.0" `
+            -Filter ExampleAShellApp.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "ExampleAShellApp.exe not found" }
+          $env:UITEST_PLATFORM = "windows"
+          $env:UITEST_APP_PATH = $exe.FullName
+          dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uitest-windows
+          path: |
+            TestResults/screenshots
+            appium.log
+          if-no-files-found: ignore

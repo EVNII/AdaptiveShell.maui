@@ -88,6 +88,11 @@ namespace AdaptiveShell.Platforms.Windows
                 Tag = item
             };
 
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(
+                menuItem, item.AutomationId ?? item.Title);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(
+                menuItem, item.Title);
+
             if (item.Icon is FileImageSource fileIcon)
             {
                 var fileName = System.IO.Path.GetFileNameWithoutExtension(fileIcon.File);

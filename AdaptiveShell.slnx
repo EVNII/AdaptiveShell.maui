@@ -3,4 +3,5 @@
   <Project Path="Example/ExampleAShellApp/ExampleAShellApp.csproj">
     <Deploy Solution="Debug|*" />
   </Project>
+  <Project Path="Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj" />
 </Solution>

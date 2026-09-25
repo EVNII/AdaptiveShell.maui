@@ -10,6 +10,7 @@
     <!-- 小屏(<600)时 FullBleed=true 扩展铺满,大屏时收缩避让 -->
     <a:AShellContent
         Title="Home"
+        AutomationId="home"
         Icon="home.svg"
         ContentTemplate="{DataTemplate local:MainPage}">
         <VisualStateManager.VisualStateGroups>
@@ -36,18 +37,21 @@
 
     <a:AShellContent
     Title="Home2"
+    AutomationId="home2"
     Icon="favorite.svg"
     ContentTemplate="{DataTemplate local:MainPage}"
     />
 
-    <a:AShellGroup Title="媒体" Icon="folder.svg">
+    <a:AShellGroup Title="媒体" AutomationId="media" Icon="folder.svg">
         <a:AShellContent
             Title="音乐"
+            AutomationId="music"
             Icon="star.svg"
             ContentTemplate="{DataTemplate local:MainPage}"
             />
         <a:AShellContent
             Title="相册"
+            AutomationId="photos"
             Icon="star.svg"
             ContentTemplate="{DataTemplate local:MainPage}"
             />

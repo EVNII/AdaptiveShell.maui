@@ -506,6 +506,7 @@ namespace AdaptiveShell.Platforms.Android
                     LayoutParameters = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MatchParent, Dp(56)),
                 };
+                row.ContentDescription = child.AutomationId ?? child.Title;
                 row.SetGravity(GravityFlags.CenterVertical);
                 row.SetPadding(Dp(16), 0, Dp(16), 0);
 
@@ -682,6 +683,8 @@ namespace AdaptiveShell.Platforms.Android
             {
                 Spacing = 14,
                 Padding = new Thickness(4, 12),
+                // 落地页行与子页条目区分定位,加 landing- 前缀
+                AutomationId = $"landing-{child.AutomationId ?? child.Title}",
             };
 
             if (child.Icon is not null)
@@ -779,19 +782,31 @@ namespace AdaptiveShell.Platforms.Android
             _contentToMenuItemMap.Clear();
             _groupToMenuItemMap.Clear();
 
+            // 显式分配 itemId(Menu.Add(title) 默认全为 0):
+            // 选中态同步 SelectedItemId 与无障碍注入都依赖稳定 id
+            int index = 0;
             foreach (var item in _virtualView.Items)
             {
                 if (item is AShellContent content)
                 {
-                    AddMenuItem(content);
+                    AddMenuItem(content, index++);
                 }
                 else if (item is AShellGroup group)
                 {
-                    var menuItem = _navigationView.Menu.Add(group.Title);
+                    var menuItem = _navigationView.Menu.Add(0, index + 1, index, group.Title);
+                    index++;
+                    ApplyMenuItemAccessibility(menuItem, group);
                     _groupToMenuItemMap[group] = menuItem;
                     LoadIconAsync(group, menuItem);
                 }
             }
+        }
+
+        // 显式设置了 AutomationId 时用它作 content-desc(无障碍/测试定位),
+        // 否则保持 Title 作朗读标签
+        private static void ApplyMenuItemAccessibility(IMenuItem menuItem, AShellItem item)
+        {
+            menuItem.SetContentDescription(new Java.Lang.String(item.AutomationId ?? item.Title));
         }
 
         private AShellGroup? FindGroupOf(AShellContent child)
@@ -807,9 +822,10 @@ namespace AdaptiveShell.Platforms.Android
             return null;
         }
 
-        private void AddMenuItem(AShellContent content)
+        private void AddMenuItem(AShellContent content, int index)
         {
-            var menuItem = _navigationView.Menu.Add(content.Title);
+            var menuItem = _navigationView.Menu.Add(0, index + 1, index, content.Title);
+            ApplyMenuItemAccessibility(menuItem, content);
             _contentToMenuItemMap[content] = menuItem;
             LoadIconAsync(content, menuItem);
         }
@@ -930,6 +946,7 @@ namespace AdaptiveShell.Platforms.Android
                 _toolbar.Title = _virtualView.CurrentItem.Title;
                 _toolbar.NavigationIcon = _context.GetDrawable(
                     Resource.Drawable.material_symbols_arrow_back_24);
+                _toolbar.NavigationContentDescription = "Back";
                 _toolbar.Visibility = ViewStates.Visible;
                 AttachBackClick();
             }

@@ -87,6 +87,7 @@ namespace AdaptiveShell.Platforms.MacIOS
                     UIImage.GetSystemImage("doc.text"),
                     content.Id.ToString(),
                     _ => CreatePage(content, wrapInNavigation));
+                tab.AccessibilityIdentifier = content.AutomationId ?? content.Title;
 
                 _contentToUITabMap[content] = tab;
                 content.FullBleedChanged += OnContentFullBleedChanged;
@@ -117,8 +118,14 @@ namespace AdaptiveShell.Platforms.MacIOS
                     _ => GetOrCreateGroupNavigation(group));
 
                 // 组节点在任何 sidebar 里都不可点击(仅作可折叠分区标题);
-                // 落地页经组 tab(tab 模式)进入,与该开关无关
-                tabGroup.IsSidebarDestination = false;
+                // 落地页经组 tab(tab 模式)进入,与该开关无关。
+                // 注意:IsSidebarDestination 是 iOS 26 新增 API,iOS 18-25 上
+                // selector 不存在,直接赋值会 unrecognized selector 崩溃
+                if (tabGroup.RespondsToSelector(new ObjCRuntime.Selector("setIsSidebarDestination:")))
+                {
+                    tabGroup.IsSidebarDestination = false;
+                }
+                tabGroup.AccessibilityIdentifier = group.AutomationId ?? group.Title;
 
                 _groupToUITabGroupMap[group] = tabGroup;
                 LoadIconAsync(group, tabGroup);
@@ -188,8 +195,13 @@ namespace AdaptiveShell.Platforms.MacIOS
                 return;
             }
 
+            // sidebar 真的在呈现才算 sidebar 形态:
+            // iPhone idiom(含 iPhone Duo 展开、Plus/Pro Max 横屏)下
+            // HorizontalSizeClass 也是 Regular,但 sidebar 不可用,
+            // 系统用悬浮 tab bar,必须显示返回按钮
             bool sidebarPresentation =
                 TraitCollection.HorizontalSizeClass == UIUserInterfaceSizeClass.Regular
+                && UIDevice.CurrentDevice.UserInterfaceIdiom != UIUserInterfaceIdiom.Phone
                 && Sidebar is not null && !Sidebar.Hidden;
 
             container.NavigationItem?.SetHidesBackButton(sidebarPresentation, animated);
@@ -248,6 +260,8 @@ namespace AdaptiveShell.Platforms.MacIOS
             {
                 Spacing = 14,
                 Padding = new Thickness(4, 12),
+                // 落地页行与子页 tab 区分定位,加 landing- 前缀
+                AutomationId = $"landing-{child.AutomationId ?? child.Title}",
             };
 
             if (child.Icon is not null)
