@@ -65,6 +65,8 @@ jobs:
           target: default
           arch: x86_64
           profile: ${{ matrix.profile }}
+          # runner 剩余空间 ~6G,默认 userdata 7.3G 建不出来
+          disk-size: 4G
           disable-animations: true
           script: |
             npx appium > appium.log 2>&1 &
@@ -99,9 +101,12 @@ jobs:
           node-version: '22'
 
       - name: Select latest Xcode
-        # 最新 maui-ios workload 需要 iOS 26.5 SDK,runner 默认 Xcode 可能偏旧
+        # 最新 maui-ios workload 需要较新的 iOS SDK,runner 默认 Xcode 可能偏旧;
+        # 切换后必须 runFirstLaunch,否则 actool 等工具报 "Invalid argument"
         run: |
           sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer"
+          sudo xcodebuild -license accept || true
+          xcodebuild -runFirstLaunch
           xcodebuild -version
 
       - name: Install MAUI workloads
@@ -127,7 +132,9 @@ jobs:
           echo "UDID=$UDID" >> "$GITHUB_ENV"
 
       - name: Build example app
-        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64
+        # runner 最新 Xcode(26.3)的 SDK 低于 ios26.5 pack 要求(26.5),
+        # SdkOnly 链接可绕过 MT0180(库用到的 UITab 等 API 在 26.3 SDK 内)
+        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64 -p:MtouchLink=SdkOnly
 
       - name: Run UI tests
         run: |
