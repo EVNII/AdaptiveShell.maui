@@ -65,8 +65,8 @@ jobs:
           target: default
           arch: x86_64
           profile: ${{ matrix.profile }}
-          # runner 剩余空间 ~6G,默认 userdata 7.3G 建不出来
-          disk-size: 4G
+          # runner 剩余空间 ~6G,默认 userdata 7.3G 建不出来(单位必须 MB,"4G" 不生效)
+          disk-size: 4096M
           disable-animations: true
           script: |
             npx appium > appium.log 2>&1 &
@@ -101,10 +101,13 @@ jobs:
           node-version: '22'
 
       - name: Select latest Xcode
-        # 最新 maui-ios workload 需要较新的 iOS SDK,runner 默认 Xcode 可能偏旧;
-        # 切换后必须 runFirstLaunch,否则 actool 等工具报 "Invalid argument"
+        # 最新 maui-ios workload 需要较新的 iOS SDK,runner 默认 Xcode 可能偏旧。
+        # 必须先 realpath 再选:macios 的已知缺陷是 Xcode 为符号链接时
+        # actool 查找失败(exit 16384);切换后 runFirstLaunch 装组件
         run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer"
+          XCODE_APP="$(for app in /Applications/Xcode*.app; do realpath "$app"; done | sort -uV | tail -1)"
+          echo "Selecting $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
           sudo xcodebuild -license accept || true
           xcodebuild -runFirstLaunch
           xcodebuild -version
