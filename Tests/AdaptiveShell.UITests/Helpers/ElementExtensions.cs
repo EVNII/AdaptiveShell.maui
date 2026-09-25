@@ -15,16 +15,19 @@ public static class ElementExtensions
     /// resource-id 而非 content-desc,因此两种定位策略都尝试。
     /// </summary>
     public static AppiumElement WaitForAccessibilityId(
-        this AppiumDriver driver, string id, int timeoutSeconds = DefaultTimeoutSeconds)
+        this AppiumDriver driver, string id, int timeoutSeconds = 0)
     {
-        return WaitForAny(driver, timeoutSeconds, MobileBy.AccessibilityId(id), MobileBy.Id(id));
+        return WaitForAny(driver, ResolveTimeout(timeoutSeconds), MobileBy.AccessibilityId(id), MobileBy.Id(id));
     }
 
     public static AppiumElement WaitFor(
-        this AppiumDriver driver, By by, int timeoutSeconds = DefaultTimeoutSeconds)
+        this AppiumDriver driver, By by, int timeoutSeconds = 0)
     {
-        return WaitForAny(driver, timeoutSeconds, by);
+        return WaitForAny(driver, ResolveTimeout(timeoutSeconds), by);
     }
+
+    static int ResolveTimeout(int timeoutSeconds) =>
+        timeoutSeconds > 0 ? timeoutSeconds : DefaultTimeoutSeconds;
 
     static AppiumElement WaitForAny(AppiumDriver driver, int timeoutSeconds, params By[] locators)
     {
