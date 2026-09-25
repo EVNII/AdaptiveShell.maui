@@ -22,9 +22,9 @@ try {
 
 if (-not $appiumUp) {
     Write-Host ">> Starting appium server (log: $env:TEMP\appium-uitest.log)"
-    Start-Process -FilePath "npx" -ArgumentList "--yes","appium" `
-        -RedirectStandardOutput "$env:TEMP\appium-uitest.log" `
-        -RedirectStandardError "$env:TEMP\appium-uitest.err.log" -WindowStyle Hidden
+    # npx 是 .cmd shim,Start-Process 不能直接起,要走 cmd.exe
+    Start-Process cmd.exe -ArgumentList '/c',"npx --yes appium > `"$env:TEMP\appium-uitest.log`" 2>&1" `
+        -WindowStyle Hidden
     for ($i = 0; $i -lt 60; $i++) {
         Start-Sleep -Seconds 1
         try {

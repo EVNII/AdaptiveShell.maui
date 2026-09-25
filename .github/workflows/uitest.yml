@@ -13,8 +13,10 @@ env:
 # 在托管 runner 上不稳定,仅保留本地运行(见 Tests/AdaptiveShell.UITests/run-uitest.sh)
 
 jobs:
+  # Android 跑在 ubuntu:macos-15 标准 runner(M1/M2)不支持嵌套虚拟化,
+  # Android 模拟器 HVF 加速不可用;ubuntu runner 有 KVM
   uitest-android:
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -26,6 +28,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -55,7 +63,7 @@ jobs:
         with:
           api-level: 35
           target: default
-          arch: arm64-v8a
+          arch: x86_64
           profile: ${{ matrix.profile }}
           disable-animations: true
           script: |
@@ -89,6 +97,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Select latest Xcode
+        # 最新 maui-ios workload 需要 iOS 26.5 SDK,runner 默认 Xcode 可能偏旧
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer"
+          xcodebuild -version
 
       - name: Install MAUI workloads
         run: dotnet workload install maui-ios
@@ -163,8 +177,8 @@ jobs:
       - name: Run UI tests
         shell: pwsh
         run: |
-          Start-Process npx -ArgumentList "appium" `
-            -RedirectStandardOutput appium.log -RedirectStandardError appium.err.log `
+          # npx/appium 是 .cmd shim,Start-Process 不能直接起,要走 cmd.exe
+          Start-Process cmd.exe -ArgumentList '/c','npx --yes appium > appium.log 2>&1' `
             -WindowStyle Hidden
           Start-Sleep -Seconds 10
           $exe = Get-ChildItem "Example/ExampleAShellApp/bin/Debug/net10.0-windows10.0.19041.0" `
