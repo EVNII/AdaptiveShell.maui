@@ -71,6 +71,11 @@ jobs:
         # EmbedAssembliesIntoApk:Debug 默认 fast-deploy 包不含程序集,装到模拟器后启动即崩
         run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-android -p:EmbedAssembliesIntoApk=true
 
+      - name: Start Appium
+        # 作为独立 step 后台启动:emulator-runner 的 script 逐行独立 sh -c,
+        # 在里面起的 appium 会随该行的 shell 退出被带走(时序上时好时坏)
+        run: npx appium > appium.log 2>&1 &
+
       - name: Run UI tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -82,9 +87,7 @@ jobs:
           cores: 4
           disable-animations: true
           script: |
-            npx appium > appium.log 2>&1 &
-            # 注意:该 action 把 script 逐行交给独立 sh -c 执行,export 不跨行保留,
-            # 环境变量必须内联在命令前
+            until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
             UITEST_PLATFORM=android UITEST_FORM=${{ matrix.form }} UITEST_APP_PATH="$GITHUB_WORKSPACE/Example/ExampleAShellApp/bin/Debug/net10.0-android/com.companyname.exampleashellapp-Signed.apk" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
 
       - name: Upload failure artifacts
