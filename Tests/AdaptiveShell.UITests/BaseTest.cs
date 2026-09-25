@@ -12,8 +12,17 @@ public abstract class BaseTest
     public void CreateSession()
     {
         Driver = AppiumSetup.CreateDriver();
-        // 等壳的首个导航项出现,说明首屏已渲染
-        Driver.WaitForAccessibilityId("home");
+        try
+        {
+            // 等壳的首个导航项出现,说明首屏已渲染
+            Driver.WaitForAccessibilityId("home");
+        }
+        catch
+        {
+            // fixture 级失败不走 TearDown,这里补截图,CI 上才能看到首屏真实状态
+            SaveScreenshot("OneTimeSetUp");
+            throw;
+        }
     }
 
     [OneTimeTearDown]
@@ -32,11 +41,16 @@ public abstract class BaseTest
             return;
         }
 
+        SaveScreenshot(TestContext.CurrentContext.Test.Name);
+    }
+
+    void SaveScreenshot(string testName)
+    {
         try
         {
             var dir = Path.Combine(AppiumSetup.RepoRoot, "TestResults", "screenshots");
             Directory.CreateDirectory(dir);
-            var name = $"{TestContext.CurrentContext.Test.ClassName}.{TestContext.CurrentContext.Test.Name}"
+            var name = $"{TestContext.CurrentContext.Test.ClassName}.{testName}"
                 .Replace("\"", "").Replace("/", "_");
             var path = Path.Combine(dir, $"{name}.png");
             Driver.GetScreenshot().SaveAsFile(path);

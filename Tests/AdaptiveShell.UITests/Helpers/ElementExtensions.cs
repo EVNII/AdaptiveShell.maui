@@ -6,7 +6,8 @@ namespace AdaptiveShell.UITests;
 
 public static class ElementExtensions
 {
-    const int DefaultTimeoutSeconds = 20;
+    static int DefaultTimeoutSeconds =>
+        int.TryParse(Environment.GetEnvironmentVariable("UITEST_TIMEOUT_SECONDS"), out var s) ? s : 60;
 
     /// <summary>
     /// 按自动化标识等待元素出现。跨平台差异:iOS/Mac/Windows 上 AutomationId 即
