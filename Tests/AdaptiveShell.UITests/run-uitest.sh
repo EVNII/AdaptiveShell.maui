@@ -56,7 +56,7 @@ data = json.load(sys.stdin)
 for runtimes in data['devices'].values():
     for d in runtimes:
         if d['name'] == '$DEVICE_NAME':
-            print(d['udid']); break
+            print(d['udid']); sys.exit(0)
 ")"
     [ -n "$UDID" ] || { echo "!! simulator '$DEVICE_NAME' not found" >&2; exit 1; }
     echo ">> Booting iOS simulator: $DEVICE_NAME ($UDID)"

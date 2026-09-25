@@ -46,8 +46,9 @@ jobs:
           appium driver install uiautomator2
 
       - name: Build example app
+        # TargetFrameworks 单 TFM 覆盖:否则 restore 会要求 ios/maccatalyst workload;
         # EmbedAssembliesIntoApk:Debug 默认 fast-deploy 包不含程序集,装到模拟器后启动即崩
-        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -f net10.0-android -p:EmbedAssembliesIntoApk=true
+        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-android -p:EmbedAssembliesIntoApk=true
 
       - name: Run UI tests
         uses: reactivecircus/android-emulator-runner@v2
@@ -105,14 +106,14 @@ jobs:
           for runtimes in data['devices'].values():
               for d in runtimes:
                   if d['name'] == 'iPhone 16':
-                      print(d['udid']); break
+                      print(d['udid']); sys.exit(0)
           ")
           [ -n "$UDID" ] || { echo 'iPhone 16 simulator not found'; exit 1; }
           xcrun simctl boot "$UDID" || true
           echo "UDID=$UDID" >> "$GITHUB_ENV"
 
       - name: Build example app
-        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -f net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64
+        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64
 
       - name: Run UI tests
         run: |
@@ -157,7 +158,7 @@ jobs:
           appium driver install --source npm appium-windows-driver
 
       - name: Build example app
-        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -f net10.0-windows10.0.19041.0
+        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-windows10.0.19041.0
 
       - name: Run UI tests
         shell: pwsh
