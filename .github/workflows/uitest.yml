@@ -78,6 +78,8 @@ jobs:
           target: default
           arch: x86_64
           profile: ${{ matrix.profile }}
+          # 默认 2 核时系统弹启动器 ANR 弹窗挡住无障碍树
+          cores: 4
           disable-animations: true
           script: |
             npx appium > appium.log 2>&1 &
