@@ -60,6 +60,13 @@ public class NavigationTests : BaseTest
 
         var back = Driver.FindByAccessibilityIdOrDefault("Back", 5)
             ?? Driver.FindByAccessibilityIdOrDefault("媒体", 5);
+        if (back is null && AppiumSetup.Platform is "ios" or "maccatalyst")
+        {
+            // iOS 26+ 的返回按钮是 chevron 样式,无障碍名既不是 "Back" 也不是前一页标题,
+            // 退化为导航栏第一个按钮
+            back = Driver.FindOrDefault(
+                By.XPath("//XCUIElementTypeNavigationBar//XCUIElementTypeButton[1]"), 5);
+        }
         Assert.That(back, Is.Not.Null,
             "Expected a back affordance (toolbar back / nav bar back) on the group child page.");
         back!.Click();

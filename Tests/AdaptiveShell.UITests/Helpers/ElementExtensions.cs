@@ -92,6 +92,19 @@ public static class ElementExtensions
         }
     }
 
+    public static AppiumElement? FindOrDefault(
+        this AppiumDriver driver, By by, int timeoutSeconds = 5)
+    {
+        try
+        {
+            return driver.WaitFor(by, timeoutSeconds);
+        }
+        catch (WebDriverTimeoutException)
+        {
+            return null;
+        }
+    }
+
     public static bool ExistsByAccessibilityId(this AppiumDriver driver, string id, int timeoutSeconds = 5)
     {
         return driver.FindByAccessibilityIdOrDefault(id, timeoutSeconds) is not null;
