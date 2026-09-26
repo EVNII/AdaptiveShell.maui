@@ -36,6 +36,7 @@ public class AdaptiveChromeTests : BaseTest
         }
 
         Driver.WaitForAccessibilityId("media").Click();
+        Shot("rail-group-drawer");
         Driver.WaitForAccessibilityId("music").Click();
         Driver.WaitForAccessibilityId("counterBtn");
     }
@@ -51,8 +52,10 @@ public class AdaptiveChromeTests : BaseTest
         var toggle = Driver.WaitForAccessibilityId("Open navigation menu");
         toggle.Click();
         Driver.WaitForAccessibilityId("Collapse navigation rail");
+        Shot("rail-expanded");
         Driver.WaitForAccessibilityId("Collapse navigation rail").Click();
         // 收起后标签是 "Expand navigation rail"(初始的 "Open navigation menu" 只在创建时出现一次)
         Driver.WaitForAccessibilityId("Expand navigation rail");
+        Shot("rail-collapsed");
     }
 }

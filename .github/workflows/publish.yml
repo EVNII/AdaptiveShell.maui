@@ -13,7 +13,42 @@ env:
   DOTNET_NOLOGO: true
 
 jobs:
+  # 发布门禁:同一源 commit 在公开仓库的全矩阵 E2E(release-uitest.yml,
+  # 由 sync-public 同步 push 触发)必须全绿才允许构建/发布。
+  # 读公开仓库的 run 列表只需 GITHUB_TOKEN,不需要额外 PAT
+  release-gate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Wait for public repo E2E matrix on this commit
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:8}"
+          echo "Gating on public matrix run for source commit $SHORT_SHA"
+          for i in $(seq 1 120); do
+            RUN_JSON=$(gh run list --repo EVNII/AdaptiveShell.maui \
+              --workflow release-uitest.yml --branch main --limit 30 \
+              --json databaseId,status,conclusion,displayTitle)
+            RUN_ID=$(echo "$RUN_JSON" | python3 -c "
+          import json, sys
+          for r in json.load(sys.stdin):
+              if '$SHORT_SHA' in r['displayTitle']:
+                  print(r['databaseId']); break
+          ")
+            if [ -n "$RUN_ID" ]; then
+              echo "Found run $RUN_ID; watching..."
+              gh run watch "$RUN_ID" --repo EVNII/AdaptiveShell.maui \
+                --exit-status --interval 60
+              exit $?
+            fi
+            echo "Matrix run not started yet (sync pending?); retry in 30s"
+            sleep 30
+          done
+          echo "No public matrix run found for $SHORT_SHA within timeout"
+          exit 1
+
   build-apple:
+    needs: release-gate
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -43,6 +78,7 @@ jobs:
           retention-days: 1
 
   build-windows:
+    needs: release-gate
     runs-on: windows-latest
     steps:
       - name: Checkout

@@ -15,12 +15,36 @@ public abstract class BaseTest
         try
         {
             WaitForShell();
+            Shot("launch");
         }
         catch
         {
             // fixture 级失败不走 TearDown,这里补截图,CI 上才能看到首屏真实状态
             SaveScreenshot("OneTimeSetUp");
             throw;
+        }
+    }
+
+    int _shotSequence;
+
+    /// <summary>关键步骤留档截图,归入 TestResults/shots/&lt;platform&gt;-&lt;form&gt;/,供报告汇总。</summary>
+    protected void Shot(string label)
+    {
+        try
+        {
+            var form = AppiumSetup.Form ?? "default";
+            var dir = Path.Combine(AppiumSetup.RepoRoot, "TestResults", "shots",
+                $"{AppiumSetup.Platform}-{form}");
+            Directory.CreateDirectory(dir);
+            var name = $"{++_shotSequence:00}-{label}.png"
+                .Replace("\"", "").Replace("/", "_");
+            var path = Path.Combine(dir, name);
+            Driver.GetScreenshot().SaveAsFile(path);
+            TestContext.Out.WriteLine($"Shot saved: {path}");
+        }
+        catch (Exception ex)
+        {
+            TestContext.Out.WriteLine($"Failed to capture shot '{label}': {ex.Message}");
         }
     }
 

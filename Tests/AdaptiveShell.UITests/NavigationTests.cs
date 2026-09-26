@@ -19,6 +19,7 @@ public class NavigationTests : BaseTest
     public void SelectItem_SwitchesContent()
     {
         Driver.WaitForAccessibilityId("home2").Click();
+        Shot("home2-selected");
 
         var counter = Driver.WaitForAccessibilityId("counterBtn");
         counter.Click();
@@ -36,16 +37,19 @@ public class NavigationTests : BaseTest
         // Android rail 宽形态:弹二级抽屉(music 项);Windows:组条目直接选中首叶
         var childEntry = Driver.FindByAccessibilityIdOrDefault("landing-music", 8)
             ?? Driver.FindByAccessibilityIdOrDefault("music", 4);
+        Shot("group-opened");
 
         if (childEntry is null)
         {
             // Windows:点组即选中首个子页,内容已切换
             Driver.WaitForAccessibilityId("counterBtn");
+            Shot("group-child");
             return;
         }
 
         childEntry.Click();
         Driver.WaitForAccessibilityId("counterBtn");
+        Shot("group-child");
 
         // rail 抽屉(Android 宽形态)选中即关抽屉、Windows 点组即选首叶,
         // 这些形态没有返回入口;紧凑形态/iOS tab 模式(落地页 -> 子页)必须能返回落地页
@@ -60,5 +64,6 @@ public class NavigationTests : BaseTest
             "Expected a back affordance (toolbar back / nav bar back) on the group child page.");
         back!.Click();
         Driver.WaitForAccessibilityId("landing-music");
+        Shot("group-back-to-landing");
     }
 }

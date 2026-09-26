@@ -90,6 +90,18 @@ Configuration via environment variables: `UITEST_PLATFORM`, `UITEST_FORM` (`comp
 
 CI (`.github/workflows/uitest.yml`) runs Android (phone + tablet emulator matrix), iOS and Windows on every push/PR; Mac Catalyst runs locally only.
 
+## Release & quality gate
+
+Releases are gated on a full E2E matrix that runs on the **public repo** ([EVNII/AdaptiveShell.maui](https://github.com/EVNII/AdaptiveShell.maui), where GitHub Actions is free) via `.github/workflows/release-uitest.yml`, triggered on every sync to `main`:
+
+- **iOS** 18 (macos-15) / 26 (macos-26) / 27 (xcode-27 preview, experimental) × { iPhone (compact), iPhone Duo (when available), iPad (wide) } — devices are discovered dynamically from the installed simulator runtimes
+- **Android** API 23–36 (the library's `minSdk` onwards) × { phone, tablet }
+- **Windows** single cell; **Mac Catalyst** experimental (hosted runners cannot grant the accessibility permission the Mac2 driver needs — verify locally)
+
+The gate: `publish.yml`'s `release-gate` job waits for the matrix run matching the tagged commit and blocks the NuGet push unless every non-experimental cell is green. Cells whose environment does not exist (e.g. an iOS major not present on the runner image) are skipped rather than failed.
+
+Screenshots are captured at key steps in every test (`Shot(...)` in `Tests/AdaptiveShell.UITests/BaseTest.cs`), uploaded per cell as artifacts, and assembled into a report published to GitHub Pages: <https://evnii.github.io/AdaptiveShell.maui/>.
+
 ## License
 
 [MIT](LICENSE)
