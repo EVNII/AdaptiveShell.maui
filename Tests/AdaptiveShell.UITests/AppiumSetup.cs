@@ -84,6 +84,8 @@ public static class AppiumSetup
         }
         AddIfSet(options, "appium:udid", Environment.GetEnvironmentVariable("UITEST_DEVICE_UDID"));
         options.DeviceName = Environment.GetEnvironmentVariable("UITEST_DEVICE_NAME") ?? "iPhone 16";
+        // 干净机器上首个会话要现场编译 WebDriverAgent,远超默认 60s 的启动超时
+        options.AddAdditionalAppiumOption("appium:wdaLaunchTimeout", 600000);
         options.AddAdditionalAppiumOption("appium:newCommandTimeout", 300);
         return new IOSDriver(serverUri, options, CommandTimeout);
     }
