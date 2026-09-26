@@ -6,7 +6,8 @@ name: Release UI Tests
 # 矩阵:
 #   iOS  18 (macos-15) / 26 (macos-26) / 27 (xcode-27 预览,experimental)
 #        × { iPhone(compact), iPhone Duo(duo,存在才有), iPad(wide) } — 动态发现
-#   Android API 23-36 × { pixel_6(compact), pixel_tablet(wide) }
+#   Android API 26-36 × { pixel_6(compact), pixel_tablet(wide) }
+#        (UiAutomator2 最低支持 Android 8.0/API 26,23-25 只能编译覆盖)
 #   Windows 单 cell;MacCatalyst 单 cell(experimental,托管 runner 无 TCC 授权)
 
 on:
@@ -44,10 +45,13 @@ jobs:
       - name: Build example app (iOS)
         # runner 最新 Xcode 的 SDK 可能低于 ios26.5 pack 要求,SdkOnly 链接绕过 MT0180
         run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64 -p:MtouchLink=SdkOnly
+      - name: Zip .app
+        # upload-artifact 不保留 .app 内的符号链接/权限,必须先打包
+        run: ditto -c -k --sequesterRsrc --keepParent Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app ExampleAShellApp.zip
       - uses: actions/upload-artifact@v4
         with:
           name: ios-app
-          path: Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app
+          path: ExampleAShellApp.zip
           retention-days: 3
 
   build-android-apk:
@@ -151,6 +155,8 @@ jobs:
         with:
           name: ios-app
           path: app
+      - name: Unzip .app
+        run: ditto -x -k app/ExampleAShellApp.zip app/
       - name: Boot simulator
         run: xcrun simctl boot "${{ matrix.udid }}" || true
       - name: Start Appium
@@ -197,6 +203,8 @@ jobs:
         with:
           name: ios-app
           path: app
+      - name: Unzip .app
+        run: ditto -x -k app/ExampleAShellApp.zip app/
       - name: Boot simulator
         run: xcrun simctl boot "${{ matrix.udid }}" || true
       - name: Start Appium
@@ -245,6 +253,8 @@ jobs:
         with:
           name: ios-app
           path: app
+      - name: Unzip .app
+        run: ditto -x -k app/ExampleAShellApp.zip app/
       - name: Boot simulator
         run: xcrun simctl boot "${{ matrix.udid }}" || true
       - name: Start Appium
@@ -276,12 +286,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api: [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
+        # Appium UiAutomator2 只支持 Android 8.0(API 26)+,23-25 无法驱动;
+        # form 轴与 include 按共享 key 合并:compact->pixel_6,wide->pixel_tablet
+        api: [26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
+        form: [compact, wide]
         include:
-          - profile: pixel_6
-            form: compact
-          - profile: pixel_tablet
-            form: wide
+          - form: compact
+            profile: pixel_6
+          - form: wide
+            profile: pixel_tablet
     name: uitest-android (api${{ matrix.api }}, ${{ matrix.form }})
     steps:
       - uses: actions/checkout@v4
@@ -454,6 +467,8 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all shots
         uses: actions/download-artifact@v4
         with:

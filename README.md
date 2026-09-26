@@ -95,7 +95,7 @@ CI (`.github/workflows/uitest.yml`) runs Android (phone + tablet emulator matrix
 Releases are gated on a full E2E matrix that runs on the **public repo** ([EVNII/AdaptiveShell.maui](https://github.com/EVNII/AdaptiveShell.maui), where GitHub Actions is free) via `.github/workflows/release-uitest.yml`, triggered on every sync to `main`:
 
 - **iOS** 18 (macos-15) / 26 (macos-26) / 27 (xcode-27 preview, experimental) × { iPhone (compact), iPhone Duo (when available), iPad (wide) } — devices are discovered dynamically from the installed simulator runtimes
-- **Android** API 23–36 (the library's `minSdk` onwards) × { phone, tablet }
+- **Android** API 26–36 (Appium UiAutomator2's floor is Android 8.0/API 26; API 23–25 remain compile-level coverage) × { phone, tablet }
 - **Windows** single cell; **Mac Catalyst** experimental (hosted runners cannot grant the accessibility permission the Mac2 driver needs — verify locally)
 
 The gate: `publish.yml`'s `release-gate` job waits for the matrix run matching the tagged commit and blocks the NuGet push unless every non-experimental cell is green. Cells whose environment does not exist (e.g. an iOS major not present on the runner image) are skipped rather than failed.
