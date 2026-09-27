@@ -59,6 +59,8 @@ public static class AppiumSetup
         AddIfSet(options, "appium:udid", Environment.GetEnvironmentVariable("UITEST_DEVICE_UDID"));
         // 总是重装,避免设备上残留旧的 fast-deploy 包(version 相同会跳过安装)
         options.AddAdditionalAppiumOption("appium:enforceAppInstall", true);
+        // 慢速 CI 模拟器上 adb install 可能超过默认 90s
+        options.AddAdditionalAppiumOption("appium:androidInstallTimeout", 300000);
         options.AddAdditionalAppiumOption("appium:newCommandTimeout", 300);
         return new AndroidDriver(serverUri, options, CommandTimeout);
     }
