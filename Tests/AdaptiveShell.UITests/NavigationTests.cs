@@ -33,13 +33,18 @@ public class NavigationTests : BaseTest
     [Test]
     public void Group_NavigatesToChildAndBack()
     {
-        Driver.WaitForAccessibilityId("media").Click();
+        // 组子项入口:Apple sidebar 形态(iPad/Mac)下组默认展开,子项直接可见;
+        // 其它形态先点组(落地页/rail 抽屉/Windows 选中首叶)
+        var childEntry = Driver.FindByAccessibilityIdOrDefault("music", 3)
+            ?? Driver.FindByAccessibilityIdOrDefault("landing-music", 3);
 
-        // 紧凑形态/iOS tab 模式:先进组落地页(landing-music 行);
-        // Android rail 宽形态:弹二级抽屉(music 项);Windows:组条目直接选中首叶。
-        // 主题切换等配置变更后无障碍树刷新可能滞后十几秒,给宽一点的等待
-        var childEntry = Driver.FindByAccessibilityIdOrDefault("landing-music", 30)
-            ?? Driver.FindByAccessibilityIdOrDefault("music", 15);
+        if (childEntry is null)
+        {
+            Driver.WaitForAccessibilityId("media").Click();
+            // 主题切换等配置变更后无障碍树刷新可能滞后,给宽一点的等待
+            childEntry = Driver.FindByAccessibilityIdOrDefault("landing-music", 30)
+                ?? Driver.FindByAccessibilityIdOrDefault("music", 15);
+        }
         Shot("group-opened");
 
         if (childEntry is null)
