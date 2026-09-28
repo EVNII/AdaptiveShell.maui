@@ -28,7 +28,9 @@ jobs:
   # 共享构建产物
   # ============================================================
   build-ios-app:
-    runs-on: macos-26
+    # 用 macos-15:macos-26 镜像当前的 workload manifest 只提供 iOS 26.0/27.0 pack,
+    # 不认识 net10.0-ios26.5(NETSDK1140);macos-15 上验证过可构建
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
