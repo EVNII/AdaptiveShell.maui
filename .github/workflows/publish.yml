@@ -23,16 +23,24 @@ jobs:
     steps:
       - name: Wait for public repo E2E matrix on this commit
         run: |
-          SHORT_SHA="${GITHUB_SHA:0:8}"
-          echo "Gating on public matrix run for source commit $SHORT_SHA"
+          if [ "$GITHUB_REPOSITORY" = "EVNII/AdaptiveShell.maui" ]; then
+            # 公开仓库上发布:tag 打在公开 main 的 sync commit 上,按 headSha 匹配
+            MATCH_SHA="$GITHUB_SHA"; MATCH_MODE="headSha"
+          else
+            # 私有仓库上发布:按 sync 提交信息里内嵌的私有源 SHA 匹配
+            MATCH_SHA="${GITHUB_SHA:0:8}"; MATCH_MODE="title"
+          fi
+          echo "Gating on public matrix run ($MATCH_MODE: $MATCH_SHA)"
           for i in $(seq 1 120); do
             RUN_JSON=$(gh run list --repo EVNII/AdaptiveShell.maui \
               --workflow release-uitest.yml --branch main --limit 30 \
-              --json databaseId,status,conclusion,displayTitle)
-            RUN_ID=$(echo "$RUN_JSON" | python3 -c "
-          import json, sys
+              --json databaseId,status,conclusion,displayTitle,headSha)
+            RUN_ID=$(echo "$RUN_JSON" | MATCH_SHA="$MATCH_SHA" MATCH_MODE="$MATCH_MODE" python3 -c "
+          import json, os, sys
+          sha, mode = os.environ['MATCH_SHA'], os.environ['MATCH_MODE']
           for r in json.load(sys.stdin):
-              if '$SHORT_SHA' in r['displayTitle']:
+              hit = r['headSha'] == sha if mode == 'headSha' else sha in r['displayTitle']
+              if hit:
                   print(r['databaseId']); break
           ")
             if [ -n "$RUN_ID" ]; then
@@ -44,7 +52,7 @@ jobs:
             echo "Matrix run not started yet (sync pending?); retry in 30s"
             sleep 30
           done
-          echo "No public matrix run found for $SHORT_SHA within timeout"
+          echo "No public matrix run found for $MATCH_SHA within timeout"
           exit 1
 
   build-apple:
