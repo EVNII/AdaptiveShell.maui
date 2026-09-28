@@ -86,7 +86,9 @@ Tests/AdaptiveShell.UITests/run-uitest.sh <android|ios|maccatalyst> [compact|wid
 Tests/AdaptiveShell.UITests/run-uitest.ps1
 ```
 
-Configuration via environment variables: `UITEST_PLATFORM`, `UITEST_FORM` (`compact`|`wide`), `UITEST_APP_PATH`, `UITEST_DEVICE_NAME`, `UITEST_DEVICE_UDID`, `UITEST_APPIUM_URL`.
+Configuration via environment variables: `UITEST_PLATFORM`, `UITEST_FORM` (`compact`|`wide`|`duo`), `UITEST_APP_PATH`, `UITEST_DEVICE_NAME`, `UITEST_DEVICE_UDID`, `UITEST_APPIUM_URL`.
+
+`DarkModeTests` additionally switches the system appearance (adb `uimode`, `simctl ui appearance`, Windows registry theme) and verifies the shell stays functional in dark mode; screenshots from both themes land in the report.
 
 CI (`.github/workflows/uitest.yml`) runs Android (phone + tablet emulator matrix), iOS and Windows on every push/PR; Mac Catalyst runs locally only.
 
