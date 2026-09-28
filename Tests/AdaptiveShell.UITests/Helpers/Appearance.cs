@@ -51,19 +51,19 @@ public static class Appearance
     {
         foreach (var candidate in new[]
         {
-            "adb",
             Path.Combine(Environment.GetEnvironmentVariable("ANDROID_HOME") ?? "", "platform-tools", "adb"),
             Path.Combine(Environment.GetEnvironmentVariable("ANDROID_SDK_ROOT") ?? "", "platform-tools", "adb"),
             Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "", "Library/Android/sdk/platform-tools/adb"),
             "/usr/local/lib/android/sdk/platform-tools/adb",
         })
         {
-            if (candidate == "adb" || File.Exists(candidate))
+            if (File.Exists(candidate))
             {
                 return candidate;
             }
         }
 
+        // 最后才指望 PATH 里的 adb
         return "adb";
     }
 

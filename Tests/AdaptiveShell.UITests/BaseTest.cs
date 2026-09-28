@@ -38,6 +38,12 @@ public abstract class BaseTest
             Shots.SaveFailure(Driver,
                 TestContext.CurrentContext.Test.ClassName!,
                 TestContext.CurrentContext.Test.Name);
+
+            // 同时留一份无障碍树 XML,Appium 视角与 adb dump 可能不一致
+            var dir = Path.Combine(AppiumSetup.RepoRoot, "TestResults", "screenshots");
+            var name = $"{TestContext.CurrentContext.Test.ClassName}.{TestContext.CurrentContext.Test.Name}"
+                .Replace("\"", "").Replace("/", "_");
+            File.WriteAllText(Path.Combine(dir, $"{name}.xml"), Driver.PageSource);
         }
         catch (Exception ex)
         {

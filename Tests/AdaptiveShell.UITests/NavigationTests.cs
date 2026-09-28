@@ -36,9 +36,10 @@ public class NavigationTests : BaseTest
         Driver.WaitForAccessibilityId("media").Click();
 
         // 紧凑形态/iOS tab 模式:先进组落地页(landing-music 行);
-        // Android rail 宽形态:弹二级抽屉(music 项);Windows:组条目直接选中首叶
-        var childEntry = Driver.FindByAccessibilityIdOrDefault("landing-music", 8)
-            ?? Driver.FindByAccessibilityIdOrDefault("music", 4);
+        // Android rail 宽形态:弹二级抽屉(music 项);Windows:组条目直接选中首叶。
+        // 主题切换等配置变更后无障碍树刷新可能滞后十几秒,给宽一点的等待
+        var childEntry = Driver.FindByAccessibilityIdOrDefault("landing-music", 30)
+            ?? Driver.FindByAccessibilityIdOrDefault("music", 15);
         Shot("group-opened");
 
         if (childEntry is null)
