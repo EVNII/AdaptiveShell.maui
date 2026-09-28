@@ -365,3 +365,9 @@ FodyWeavers.xsd
 
 # UI test artifacts
 TestResults/
+
+# local release/pack artifacts
+pkg/
+prebuilt/
+merge-work/
+staging/
