@@ -82,7 +82,12 @@ public static class Appearance
 
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException($"Failed to start {fileName}");
-        process.WaitForExit(15000);
+        if (!process.WaitForExit(30000))
+        {
+            try { process.Kill(); } catch { /* 已退出则忽略 */ }
+            throw new InvalidOperationException(
+                $"{fileName} {string.Join(' ', args)} timed out after 30s");
+        }
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException(
