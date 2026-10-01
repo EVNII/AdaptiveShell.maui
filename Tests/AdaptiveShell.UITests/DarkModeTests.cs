@@ -22,6 +22,19 @@ public class DarkModeTests : BaseTest
             WaitForA11ySettled();
             Shot("light-home2-selected");
 
+            if (AppiumSetup.Platform == "ios" && AppiumSetup.Form == "wide")
+            {
+                // iPad 选择页面后系统可能自动收起 sidebar,此时 music 不在可见树中。
+                // 只点 Show Sidebar 动作,避免把已显示的侧栏反向收起。
+                var showSidebar = Driver.FindOrDefault(By.XPath(
+                    "//XCUIElementTypeButton[@label='Show Sidebar']"), 5);
+                if (showSidebar is not null)
+                {
+                    showSidebar.Click();
+                    Driver.WaitForAccessibilityId("music");
+                }
+            }
+
             // Apple sidebar 形态下子项可能已展开,不再点组将其收起。
             var childEntry = Driver.FindByAccessibilityIdOrDefault("music", 3)
                 ?? Driver.FindByAccessibilityIdOrDefault("landing-music", 3);
