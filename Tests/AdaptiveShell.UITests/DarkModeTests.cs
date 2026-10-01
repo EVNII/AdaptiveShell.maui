@@ -19,7 +19,17 @@ public class DarkModeTests : BaseTest
             {
                 // 从展开侧栏的初始页面开始,避免此前导航留下收起的系统侧栏。
                 Driver.TerminateApp(AppiumSetup.BundleId);
-                Driver.ActivateApp(AppiumSetup.BundleId);
+                try
+                {
+                    Driver.ActivateApp(AppiumSetup.BundleId);
+                }
+                catch (WebDriverException ex) when (ex.Message.Contains(
+                    "Timed out attempting to launch app", StringComparison.Ordinal))
+                {
+                    TestContext.Out.WriteLine("Retrying initial iPad app launch once after an XCTest launch timeout.");
+                    Driver.TerminateApp(AppiumSetup.BundleId);
+                    Driver.ActivateApp(AppiumSetup.BundleId);
+                }
             }
 
             Driver.WaitForAccessibilityId("home");
