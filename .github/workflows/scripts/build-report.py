@@ -37,20 +37,31 @@ def cell_result(artifact_dir: Path) -> dict:
         if test_run.tag.rsplit("}", 1)[-1] != "TestRun" or counters is None:
             raise ValueError("缺少 TestRun/ResultSummary/Counters")
 
-        # VSTest 的 notExecuted 是跳过数;额外终止/错误结果同样不能算通过。
+        # NUnit/VSTest 的跳过结果可能只出现在 UnitTestResult 中,而
+        # Counters.notExecuted 仍为 0。逐条核对结果,避免把缺失记录当成跳过。
         counts = {name: int(counters.attrib[name])
                   for name in ("total", "executed", "passed", "failed", "notExecuted")}
         failure_counts = [int(counters.get(name, "0")) for name in
-                          ("error", "timeout", "aborted", "notRunnable", "disconnected")]
+                          ("error", "timeout", "aborted", "notRunnable", "disconnected",
+                           "passedButRunAborted")]
         if any(value < 0 for value in (*counts.values(), *failure_counts)):
             raise ValueError("测试计数不能为负数")
-        passed, failed, skipped = counts["passed"], counts["failed"], counts["notExecuted"]
-        failed += sum(failure_counts)
-        if (counts["executed"] > counts["total"]
-                or counts["executed"] + skipped > counts["total"]
-                or passed + failed > counts["executed"]
-                or passed + failed + skipped > counts["total"]):
-            raise ValueError("测试计数不一致")
+
+        tests = test_run.findall("./{*}Results/{*}UnitTestResult")
+        outcomes = [test.attrib["outcome"].lower() for test in tests]
+        passed = outcomes.count("passed")
+        skipped = outcomes.count("notexecuted")
+        failed = sum(outcome in ("failed", "error", "timeout", "aborted", "notrunnable",
+                                 "disconnected", "passedbutrunaborted") for outcome in outcomes)
+        if len(tests) != counts["total"]:
+            raise ValueError("测试结果记录不完整或 total 不一致")
+        if passed + failed + skipped != len(tests):
+            raise ValueError("存在未完成或未知的测试结果")
+        if (passed != counts["passed"]
+                or failed != counts["failed"] + sum(failure_counts)
+                or passed + failed != counts["executed"]
+                or counts["notExecuted"] not in (0, skipped)):
+            raise ValueError("测试结果记录与汇总计数不一致")
 
         outcome = summary.attrib["outcome"].lower()
         if failed or outcome in ("failed", "error", "aborted", "timeout"):

@@ -8,7 +8,8 @@ name: Release UI Tests
 #        × { iPhone(compact), iPhone Duo(duo,存在才有), iPad(wide) } — 动态发现
 #   Android API 26-36 × { pixel_6(compact), pixel_tablet(wide) }
 #        (UiAutomator2 最低支持 Android 8.0/API 26,23-25 只能编译覆盖)
-#   Windows 单 cell;MacCatalyst 单 cell(experimental,托管 runner 无 TCC 授权)
+#   Windows 单 cell;MacCatalyst 单 cell
+#   所有发现的设备和平台均参与门禁,任何失败都不能视为全矩阵通过。
 
 on:
   push:
@@ -238,8 +239,7 @@ jobs:
   uitest-ios-27:
     needs: [build-ios-app, prepare-ios-27]
     runs-on: xcode-27
-    # 预览镜像/设备名单不稳定:跑且出报告,但不挡发布门禁
-    continue-on-error: true
+    # 预览镜像的设备名单动态发现,已发现的设备同样参与发布门禁。
     if: ${{ needs.prepare-ios-27.outputs.matrix != '' && needs.prepare-ios-27.outputs.matrix != '{"include":[]}' }}
     strategy:
       fail-fast: false
@@ -413,12 +413,10 @@ jobs:
           if-no-files-found: ignore
 
   # ============================================================
-  # MacCatalyst(实验位):Mac2 driver 需要辅助功能 TCC 授权,
-  # 托管 runner 上预期失败;跑出来多少算多少,不挡门禁
+  # MacCatalyst:Mac2 driver 启动已注册的应用,同样参与发布门禁。
   # ============================================================
   uitest-maccatalyst:
     runs-on: macos-26
-    continue-on-error: true
     name: uitest-maccatalyst [experimental]
     steps:
       - uses: actions/checkout@v4
@@ -446,12 +444,16 @@ jobs:
         run: |
           APP="Example/ExampleAShellApp/bin/Debug/net10.0-maccatalyst26.5/maccatalyst-arm64/ExampleAShellApp.app"
           sudo cp -R "$APP" /Applications/
+          MAC_INSTALLED_APP="/Applications/ExampleAShellApp.app"
+          MAC_APP_BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw -o - "$MAC_INSTALLED_APP/Contents/Info.plist")
+          test "$MAC_APP_BUNDLE_ID" = "com.companyname.exampleashellapp"
+          /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$MAC_INSTALLED_APP"
       - name: Start Appium
         run: npx appium > appium.log 2>&1 &
       - name: Run UI tests
         run: |
           until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
-          UITEST_PLATFORM=maccatalyst dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+          UITEST_PLATFORM=maccatalyst UITEST_APP_PATH="/Applications/ExampleAShellApp.app" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
       - name: Upload shots
         if: always()
         uses: actions/upload-artifact@v4

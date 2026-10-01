@@ -105,6 +105,7 @@ public static class AppiumSetup
             AutomationName = "Mac2",
         };
         options.AddAdditionalAppiumOption("appium:bundleId", BundleId);
+        AddIfSet(options, "appium:appPath", Environment.GetEnvironmentVariable("UITEST_APP_PATH"));
         options.AddAdditionalAppiumOption("appium:newCommandTimeout", 300);
         return new MacDriver(serverUri, options, CommandTimeout);
     }
