@@ -14,26 +14,23 @@ public class DarkModeTests : BaseTest
         try
         {
             Appearance.SetDark(false);
+            var isIosWide = AppiumSetup.Platform == "ios" && AppiumSetup.Form == "wide";
+            if (isIosWide)
+            {
+                // 从展开侧栏的初始页面开始,避免此前导航留下收起的系统侧栏。
+                Driver.TerminateApp(AppiumSetup.BundleId);
+                Driver.ActivateApp(AppiumSetup.BundleId);
+            }
 
             Driver.WaitForAccessibilityId("home");
             Driver.WaitForAccessibilityId("home2");
             Driver.WaitForAccessibilityId("media");
 
-            Driver.WaitForAccessibilityId("home2").Click();
-            WaitForA11ySettled();
-            Shot("light-home2-selected");
-
-            if (AppiumSetup.Platform == "ios" && AppiumSetup.Form == "wide")
+            if (!isIosWide)
             {
-                // iPad 选择页面后系统可能自动收起 sidebar,此时 music 不在可见树中。
-                // 只点 Show Sidebar 动作,避免把已显示的侧栏反向收起。
-                var showSidebar = Driver.FindOrDefault(By.XPath(
-                    "//XCUIElementTypeButton[@label='Show Sidebar']"), 5);
-                if (showSidebar is not null)
-                {
-                    showSidebar.Click();
-                    Driver.WaitForAccessibilityId("music");
-                }
+                Driver.WaitForAccessibilityId("home2").Click();
+                WaitForA11ySettled();
+                Shot("light-home2-selected");
             }
 
             // Apple sidebar 形态下子项可能已展开,不再点组将其收起。
@@ -103,6 +100,14 @@ public class DarkModeTests : BaseTest
             Appearance.SetDark(false);
             AssertGroupChildState(counterText);
             Shot("light-group-child-restored");
+
+            if (isIosWide)
+            {
+                // iPad 选择 Home2 会自动收起侧栏,因此在 Music 主题状态验证之后执行。
+                Driver.WaitForAccessibilityId("home2").Click();
+                WaitForA11ySettled();
+                Shot("light-home2-selected");
+            }
         }
         finally
         {
