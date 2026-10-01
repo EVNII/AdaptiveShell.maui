@@ -160,7 +160,9 @@ jobs:
       - name: Unzip .app
         run: ditto -x -k app/ExampleAShellApp.zip app/
       - name: Boot simulator
-        run: xcrun simctl boot "${{ matrix.udid }}" || true
+        run: |
+          xcrun simctl boot "${{ matrix.udid }}" || true
+          xcrun simctl bootstatus "${{ matrix.udid }}" -b
       - name: Start Appium
         run: npx appium > appium.log 2>&1 &
       - name: Run UI tests
@@ -169,7 +171,7 @@ jobs:
           UITEST_PLATFORM=ios UITEST_FORM=${{ matrix.form }} \
           UITEST_DEVICE_NAME="${{ matrix.device }}" UITEST_DEVICE_UDID="${{ matrix.udid }}" \
           UITEST_APP_PATH="$GITHUB_WORKSPACE/app/ExampleAShellApp.app" \
-            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
       - name: Upload shots
         if: always()
         uses: actions/upload-artifact@v4
@@ -178,6 +180,7 @@ jobs:
           path: |
             TestResults/shots
             TestResults/screenshots
+            TestResults/*.trx
             appium.log
           if-no-files-found: ignore
 
@@ -208,7 +211,9 @@ jobs:
       - name: Unzip .app
         run: ditto -x -k app/ExampleAShellApp.zip app/
       - name: Boot simulator
-        run: xcrun simctl boot "${{ matrix.udid }}" || true
+        run: |
+          xcrun simctl boot "${{ matrix.udid }}" || true
+          xcrun simctl bootstatus "${{ matrix.udid }}" -b
       - name: Start Appium
         run: npx appium > appium.log 2>&1 &
       - name: Run UI tests
@@ -217,7 +222,7 @@ jobs:
           UITEST_PLATFORM=ios UITEST_FORM=${{ matrix.form }} \
           UITEST_DEVICE_NAME="${{ matrix.device }}" UITEST_DEVICE_UDID="${{ matrix.udid }}" \
           UITEST_APP_PATH="$GITHUB_WORKSPACE/app/ExampleAShellApp.app" \
-            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
       - name: Upload shots
         if: always()
         uses: actions/upload-artifact@v4
@@ -226,6 +231,7 @@ jobs:
           path: |
             TestResults/shots
             TestResults/screenshots
+            TestResults/*.trx
             appium.log
           if-no-files-found: ignore
 
@@ -258,7 +264,9 @@ jobs:
       - name: Unzip .app
         run: ditto -x -k app/ExampleAShellApp.zip app/
       - name: Boot simulator
-        run: xcrun simctl boot "${{ matrix.udid }}" || true
+        run: |
+          xcrun simctl boot "${{ matrix.udid }}" || true
+          xcrun simctl bootstatus "${{ matrix.udid }}" -b
       - name: Start Appium
         run: npx appium > appium.log 2>&1 &
       - name: Run UI tests
@@ -267,7 +275,7 @@ jobs:
           UITEST_PLATFORM=ios UITEST_FORM=${{ matrix.form }} \
           UITEST_DEVICE_NAME="${{ matrix.device }}" UITEST_DEVICE_UDID="${{ matrix.udid }}" \
           UITEST_APP_PATH="$GITHUB_WORKSPACE/app/ExampleAShellApp.app" \
-            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
       - name: Upload shots
         if: always()
         uses: actions/upload-artifact@v4
@@ -276,6 +284,7 @@ jobs:
           path: |
             TestResults/shots
             TestResults/screenshots
+            TestResults/*.trx
             appium.log
           if-no-files-found: ignore
 
@@ -343,7 +352,7 @@ jobs:
           script: |
             adb shell settings put global anr_show_background 0 || true
             until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
-            UITEST_PLATFORM=android UITEST_FORM=${{ matrix.form }} UITEST_APP_PATH="$GITHUB_WORKSPACE/app/com.companyname.exampleashellapp-Signed.apk" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+            UITEST_PLATFORM=android UITEST_FORM=${{ matrix.form }} UITEST_APP_PATH="$GITHUB_WORKSPACE/app/com.companyname.exampleashellapp-Signed.apk" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
 
       - name: Upload shots
         if: always()
@@ -353,6 +362,7 @@ jobs:
           path: |
             TestResults/shots
             TestResults/screenshots
+            TestResults/*.trx
             appium.log
           if-no-files-found: ignore
 
@@ -389,7 +399,7 @@ jobs:
           if (-not $exe) { throw "ExampleAShellApp.exe not found in downloaded artifact" }
           $env:UITEST_PLATFORM = "windows"
           $env:UITEST_APP_PATH = $exe.FullName
-          dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+          dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
       - name: Upload shots
         if: always()
         uses: actions/upload-artifact@v4
@@ -398,6 +408,7 @@ jobs:
           path: |
             TestResults/shots
             TestResults/screenshots
+            TestResults/*.trx
             appium.log
           if-no-files-found: ignore
 
@@ -440,7 +451,7 @@ jobs:
       - name: Run UI tests
         run: |
           until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
-          UITEST_PLATFORM=maccatalyst dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+          UITEST_PLATFORM=maccatalyst dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
       - name: Upload shots
         if: always()
         uses: actions/upload-artifact@v4
@@ -449,6 +460,7 @@ jobs:
           path: |
             TestResults/shots
             TestResults/screenshots
+            TestResults/*.trx
             appium.log
           if-no-files-found: ignore
 

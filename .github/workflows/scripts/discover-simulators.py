@@ -53,7 +53,7 @@ def main() -> None:
             cells.append({"device": pad["name"], "udid": pad["udid"],
                           "form": "wide"})
 
-    print(json.dumps({"include": cells}))
+    print(json.dumps({"include": cells}, separators=(",", ":")))
 
 
 if __name__ == "__main__":

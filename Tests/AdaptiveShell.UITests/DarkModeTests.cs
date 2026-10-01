@@ -1,4 +1,6 @@
 using NUnit.Framework;
+using OpenQA.Selenium;
+using OpenQA.Selenium.Support.UI;
 
 namespace AdaptiveShell.UITests;
 
@@ -10,29 +12,61 @@ public class DarkModeTests : BaseTest
     {
         try
         {
-            Appearance.SetDark(true);
-            // uimode 配置变更后,resource-id 类查找会有一段陈旧窗口期,
-            // 探针元素(resource-id)可被定位才说明无障碍树已恢复
-            WaitForA11ySettled();
+            Appearance.SetDark(false);
 
-            // 深色下导航壳依然可用:所有顶层项可定位
             Driver.WaitForAccessibilityId("home");
             Driver.WaitForAccessibilityId("home2");
             Driver.WaitForAccessibilityId("media");
-            Shot("dark-launch");
 
             Driver.WaitForAccessibilityId("home2").Click();
-            Driver.WaitForAccessibilityId("counterBtn");
-            Shot("dark-home2-selected");
+            WaitForA11ySettled();
+            Shot("light-home2-selected");
 
-            Driver.WaitForAccessibilityId("media").Click();
-            Shot("dark-group-opened");
+            // Apple sidebar 形态下子项可能已展开,不再点组将其收起。
+            var childEntry = Driver.FindByAccessibilityIdOrDefault("music", 3)
+                ?? Driver.FindByAccessibilityIdOrDefault("landing-music", 3);
+            if (childEntry is null)
+            {
+                Driver.WaitForAccessibilityId("media").Click();
+                childEntry = Driver.FindByAccessibilityIdOrDefault("landing-music", 8)
+                    ?? Driver.FindByAccessibilityIdOrDefault("music", 4);
+            }
+            Shot("light-group-opened");
+            if (AppiumSetup.Platform == "windows" && childEntry is null)
+            {
+                // Windows 点组直接选中首个子页。
+                WaitForA11ySettled();
+            }
+            else
+            {
+                Assert.That(childEntry, Is.Not.Null,
+                    "Expected the Music group child entry before selecting its page.");
+                childEntry!.Click();
+            }
 
-            var childEntry = Driver.FindByAccessibilityIdOrDefault("landing-music", 8)
-                ?? Driver.FindByAccessibilityIdOrDefault("music", 4);
-            childEntry?.Click();
-            Driver.WaitForAccessibilityId("counterBtn");
+            // 在子页留下状态,主题切换期间不重新导航或重启 App。
+            var counter = Driver.WaitForAccessibilityId("counterBtn");
+            var previousText = counter.Text;
+            counter.Click();
+            var wait = new WebDriverWait(Driver, TimeSpan.FromSeconds(30));
+            wait.IgnoreExceptionTypes(typeof(StaleElementReferenceException), typeof(WebDriverTimeoutException));
+            var counterText = wait.Until(_ =>
+            {
+                var text = Driver.WaitForAccessibilityId("counterBtn", 5).Text;
+                return text != previousText ? text : null;
+            })!;
+            Shot("light-group-child");
+
+            Appearance.SetDark(true);
+            AssertGroupChildState(counterText);
+            Driver.WaitForAccessibilityId("home");
+            Driver.WaitForAccessibilityId("home2");
+            Driver.WaitForAccessibilityId("media");
             Shot("dark-group-child");
+
+            Appearance.SetDark(false);
+            AssertGroupChildState(counterText);
+            Shot("light-group-child-restored");
         }
         finally
         {
@@ -49,8 +83,80 @@ public class DarkModeTests : BaseTest
         }
     }
 
+    [Test]
+    public void DarkMode_WideDrawerAndExpandedRailStayOpen()
+    {
+        if (AppiumSetup.Platform != "android" || AppiumSetup.Form != "wide")
+        {
+            Assert.Ignore("Expanded rail and group drawer are Android wide-form behavior.");
+        }
+
+        try
+        {
+            Appearance.SetDark(false);
+            Driver.WaitForAccessibilityId("home");
+
+            var toggle = Driver.FindByAccessibilityIdOrDefault("Open navigation menu", 3)
+                ?? Driver.WaitForAccessibilityId("Expand navigation rail");
+            toggle.Click();
+            Driver.WaitForAccessibilityId("Collapse navigation rail");
+            Driver.WaitForAccessibilityId("media").Click();
+            AssertWideDrawerState();
+            Shot("light-expanded-rail-drawer");
+
+            Appearance.SetDark(true);
+            AssertWideDrawerState();
+            Shot("dark-expanded-rail-drawer");
+
+            Appearance.SetDark(false);
+            AssertWideDrawerState();
+            Shot("light-expanded-rail-drawer-restored");
+        }
+        finally
+        {
+            try
+            {
+                Appearance.SetDark(false);
+            }
+            catch (Exception ex)
+            {
+                TestContext.Out.WriteLine($"Failed to restore light mode: {ex.Message}");
+            }
+
+            try
+            {
+                if (Driver.FindByAccessibilityIdOrDefault("music", 3) is not null)
+                {
+                    Driver.Navigate().Back();
+                }
+                Driver.FindByAccessibilityIdOrDefault("Collapse navigation rail", 3)?.Click();
+            }
+            catch (Exception ex)
+            {
+                TestContext.Out.WriteLine($"Failed to close drawer and collapse rail: {ex.Message}");
+            }
+        }
+    }
+
+    void AssertWideDrawerState()
+    {
+        Driver.WaitForAccessibilityId("music");
+        Driver.WaitForAccessibilityId("Collapse navigation rail");
+    }
+
     // 当前页面(无论 home 还是组子页)都有 counterBtn,适合当探针
     void WaitForA11ySettled() => Driver.WaitForAccessibilityId("counterBtn", 30);
+
+    void AssertGroupChildState(string counterText)
+    {
+        WaitForA11ySettled();
+        Assert.That(Driver.WaitForAccessibilityId("counterBtn").Text, Is.EqualTo(counterText),
+            "Theme changes should preserve the active group child page and its counter state.");
+        if (AppiumSetup.Platform == "android" && AppiumSetup.Form == "compact")
+        {
+            Driver.WaitForAccessibilityId("Back");
+        }
+    }
 
     [TearDown]
     public void RestartAppAfterThemeChurn()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """把各 cell 上传的截图 artifact 汇总成报告站点(report/index.html + report/report.md)。
 
-输入: <dir>/shots/<artifact-name>/**.png(artifact 名即 cell 标识)
+输入: <dir>/shots/<artifact-name>/**.png 和 **.trx(artifact 名即 cell 标识)
 环境: NEEDS_JSON(各 needs job 的 result)、RUN_URL、RUN_SHA
 """
 import html
@@ -9,6 +9,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from xml.etree import ElementTree
 
 JOB_LABELS = {
     "uitest-ios-18": "iOS 18",
@@ -20,6 +21,54 @@ JOB_LABELS = {
 }
 
 
+def cell_result(artifact_dir: Path) -> dict:
+    """只用本 cell 的 TRX 报告结果,不把矩阵汇总状态当成单个 cell 的结果。"""
+    unknown = {"result": "unknown", "passed": None, "failed": None, "skipped": None}
+    trxs = sorted(artifact_dir.rglob("*.trx"))
+    if not trxs:
+        return {**unknown, "detail": "缺少 TRX; 测试是否运行或完成未知"}
+    if len(trxs) != 1:
+        return {**unknown, "detail": "存在多个 TRX; 无法确定本 cell 的唯一结果"}
+
+    try:
+        test_run = ElementTree.parse(trxs[0]).getroot()
+        summary = test_run.find("./{*}ResultSummary")
+        counters = summary.find("./{*}Counters") if summary is not None else None
+        if test_run.tag.rsplit("}", 1)[-1] != "TestRun" or counters is None:
+            raise ValueError("缺少 TestRun/ResultSummary/Counters")
+
+        # VSTest 的 notExecuted 是跳过数;额外终止/错误结果同样不能算通过。
+        counts = {name: int(counters.attrib[name])
+                  for name in ("total", "executed", "passed", "failed", "notExecuted")}
+        failure_counts = [int(counters.get(name, "0")) for name in
+                          ("error", "timeout", "aborted", "notRunnable", "disconnected")]
+        if any(value < 0 for value in (*counts.values(), *failure_counts)):
+            raise ValueError("测试计数不能为负数")
+        passed, failed, skipped = counts["passed"], counts["failed"], counts["notExecuted"]
+        failed += sum(failure_counts)
+        if (counts["executed"] > counts["total"]
+                or counts["executed"] + skipped > counts["total"]
+                or passed + failed > counts["executed"]
+                or passed + failed + skipped > counts["total"]):
+            raise ValueError("测试计数不一致")
+
+        outcome = summary.attrib["outcome"].lower()
+        if failed or outcome in ("failed", "error", "aborted", "timeout"):
+            result, detail = "failure", ""
+        elif outcome not in ("completed", "passed", "notexecuted"):
+            result, detail = "unknown", "TRX 未确认所有测试完成"
+        elif counts["executed"] == 0 and skipped == counts["total"]:
+            result, detail = "skipped", "未执行任何测试"
+        elif outcome in ("completed", "passed") and passed + skipped == counts["total"]:
+            result, detail = "success", ""
+        else:
+            result, detail = "unknown", "TRX 未确认所有测试完成"
+        return {"result": result, "passed": passed, "failed": failed, "skipped": skipped,
+                "detail": detail}
+    except (OSError, ElementTree.ParseError, KeyError, ValueError) as error:
+        return {**unknown, "detail": f"TRX 无效: {error}"}
+
+
 def main() -> None:
     root = Path(sys.argv[1])
     shots_root = root / "shots"
@@ -27,29 +76,14 @@ def main() -> None:
     run_url = os.environ.get("RUN_URL", "")
     sha = os.environ.get("RUN_SHA", "")[:8]
 
-    # cell 名(artifact 名)-> 截图列表;cell 状态按前缀映射回 needs 的 job result
+    # artifact 名即 cell 标识;截图和 TRX 结果来自同一个 artifact。
     cells = {}
     if shots_root.is_dir():
         for artifact_dir in sorted(shots_root.iterdir()):
             if not artifact_dir.is_dir():
                 continue
             pngs = sorted(artifact_dir.rglob("*.png"))
-            cells[artifact_dir.name] = pngs
-
-    def job_result_for(cell_name: str) -> str:
-        if cell_name.startswith("shots-android"):
-            key = "uitest-android"
-        elif cell_name.startswith("shots-ios18"):
-            key = "uitest-ios-18"
-        elif cell_name.startswith("shots-ios26"):
-            key = "uitest-ios-26"
-        elif cell_name.startswith("shots-ios27"):
-            key = "uitest-ios-27"
-        elif cell_name.startswith("shots-windows"):
-            key = "uitest-windows"
-        else:
-            key = "uitest-maccatalyst"
-        return needs.get(key, {}).get("result", "unknown")
+            cells[artifact_dir.name] = (pngs, cell_result(artifact_dir))
 
     md = ["# AdaptiveShell E2E 报告", "",
           f"- 运行: {run_url}", f"- commit: `{sha}`", "", "## Job 状态", ""]
@@ -66,18 +100,27 @@ def main() -> None:
         "<style>body{font-family:system-ui;margin:2rem} "
         "section{margin-bottom:2.5rem} img{max-width:320px;margin:4px;"
         "border:1px solid #ddd;border-radius:6px} "
-        ".bad{color:#c00}.ok{color:#080}</style>",
+        ".bad{color:#c00}.ok{color:#080}.unknown{color:#666}</style>",
         f"<h1>AdaptiveShell E2E 报告 <small>{sha}</small></h1>",
         f"<p><a href='{run_url}'>workflow run</a></p>",
     ]
 
-    for cell, pngs in cells.items():
-        result = job_result_for(cell)
-        cls = "ok" if result == "success" else "bad"
+    for cell, (pngs, report) in cells.items():
+        result = report["result"]
+        cls = "ok" if result == "success" else "bad" if result == "failure" else "unknown"
         title = html.escape(cell.removeprefix("shots-"))
         md.append(f"## {title} — {result}")
         md.append("")
         html_parts.append(f"<section><h2>{title} <span class='{cls}'>{result}</span></h2>")
+        if report["passed"] is not None:
+            counts = (f"通过 {report['passed']} · 失败 {report['failed']} · "
+                      f"跳过 {report['skipped']}")
+            md.extend([counts, ""])
+            html_parts.append(f"<p>{counts}</p>")
+        if report["detail"]:
+            detail = html.escape(report["detail"])
+            md.extend([detail, ""])
+            html_parts.append(f"<p>{detail}</p>")
         for png in pngs:
             rel = png.relative_to(root).as_posix()
             label = html.escape(png.stem)

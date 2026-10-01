@@ -25,6 +25,7 @@ namespace AdaptiveShell.Platforms.Android
 
         readonly Context _context;
         readonly float _density;
+        readonly AndroidX.Activity.ComponentActivity? _activity;
 
         LinearLayout _linearLayout;
         LinearLayout _contentColumnLayout;
@@ -58,6 +59,8 @@ namespace AdaptiveShell.Platforms.Android
             _mauiContext = mauiContext;
             _context = context;
             _density = context.Resources!.DisplayMetrics!.Density;
+            _activity = FindActivity(context);
+            _isNight = IsNightMode(context);
 
             _linearLayout = new LinearLayout(context);
 
@@ -144,14 +147,85 @@ namespace AdaptiveShell.Platforms.Android
 
             // 系统返回键与返回堆栈打通:抽屉打开先关抽屉,
             // 组内子页回落地页;其余情况放行 MAUI 默认返回行为
-            if (context is AndroidX.Activity.ComponentActivity componentActivity)
+            if (_activity is not null)
             {
                 _backCallback = new GroupBackCallback(this);
-                componentActivity.OnBackPressedDispatcher.AddCallback(_backCallback);
+                _activity.OnBackPressedDispatcher.AddCallback(_backCallback);
+
+                _configListener = new ConfigurationChangedListener(this);
+                _activity.AddOnConfigurationChangedListener(_configListener);
             }
         }
 
         GroupBackCallback? _backCallback;
+
+        bool _isNight;
+
+        ConfigurationChangedListener? _configListener;
+
+        bool _disposed;
+
+        private static AndroidX.Activity.ComponentActivity? FindActivity(Context context)
+        {
+            while (context is ContextWrapper wrapper)
+            {
+                if (context is AndroidX.Activity.ComponentActivity activity)
+                {
+                    return activity;
+                }
+
+                if (wrapper.BaseContext is not { } baseContext
+                    || ReferenceEquals(baseContext, context))
+                {
+                    break;
+                }
+
+                context = baseContext;
+            }
+
+            return context as AndroidX.Activity.ComponentActivity;
+        }
+
+        private static bool IsNightMode(Context context) =>
+            (context.Resources!.Configuration!.UiMode
+                & global::Android.Content.Res.UiMode.NightMask)
+            == global::Android.Content.Res.UiMode.NightYes;
+
+        private sealed class ConfigurationChangedListener
+            : Java.Lang.Object, AndroidX.Core.Util.IConsumer
+        {
+            readonly AShellView _owner;
+
+            public ConfigurationChangedListener(AShellView owner)
+            {
+                _owner = owner;
+            }
+
+            public void Accept(Java.Lang.Object? value)
+            {
+                if (_owner._disposed)
+                {
+                    return;
+                }
+
+                // ComponentActivity 先通知 listener,AppCompat 随后才更新主题。
+                // 等本次配置回调完成后再读取颜色,且不重建导航/页面以保留当前状态。
+                _owner._linearLayout.Post(() =>
+                {
+                    if (_owner._disposed)
+                    {
+                        return;
+                    }
+
+                    bool isNight = IsNightMode(_owner._context);
+                    if (_owner._isNight != isNight)
+                    {
+                        _owner._isNight = isNight;
+                        _owner.UpdateColors();
+                    }
+                });
+            }
+        }
 
         private void UpdateBackCallbackState()
         {
@@ -207,10 +281,7 @@ namespace AdaptiveShell.Platforms.Android
 
                 // 状态已过期:禁用后重新分发,交回默认行为
                 Enabled = false;
-                if (_owner._context is AndroidX.Activity.ComponentActivity activity)
-                {
-                    activity.OnBackPressedDispatcher.OnBackPressed();
-                }
+                _owner._activity?.OnBackPressedDispatcher.OnBackPressed();
             }
         }
 
@@ -219,7 +290,21 @@ namespace AdaptiveShell.Platforms.Android
         private static int ResolveDrawerColor(Context context)
         {
             var typed = new TypedValue();
-            foreach (var name in new[] { "colorSurfaceContainer", "colorSurface" })
+            int background = global::Android.Graphics.Color.Transparent;
+            if (context.Theme!.ResolveAttribute(
+                global::Android.Resource.Attribute.ColorBackground, typed, true))
+            {
+                background = ResolveColorValue(context, typed);
+            }
+
+            return ResolveThemeColor(context, background,
+                "colorSurfaceContainer", "colorSurface");
+        }
+
+        private static int ResolveThemeColor(Context context, int fallback, params string[] names)
+        {
+            var typed = new TypedValue();
+            foreach (var name in names)
             {
                 int attrId = context.Resources!.GetIdentifier(
                     name, "attr", context.PackageName);
@@ -227,14 +312,17 @@ namespace AdaptiveShell.Platforms.Android
                     && context.Theme!.ResolveAttribute(attrId, typed, true)
                     && typed.Type != 0)
                 {
-                    return typed.Data;
+                    return ResolveColorValue(context, typed);
                 }
             }
 
-            context.Theme!.ResolveAttribute(
-                global::Android.Resource.Attribute.ColorBackground, typed, true);
-            return typed.Data;
+            return fallback;
         }
+
+        private static int ResolveColorValue(Context context, TypedValue value) =>
+            value.ResourceId != 0
+                ? global::AndroidX.Core.Content.ContextCompat.GetColor(context, value.ResourceId)
+                : value.Data;
 
         private sealed class SafeAreaInsetsListener
             : Java.Lang.Object, IOnApplyWindowInsetsListener
@@ -510,15 +598,6 @@ namespace AdaptiveShell.Platforms.Android
                 row.SetGravity(GravityFlags.CenterVertical);
                 row.SetPadding(Dp(16), 0, Dp(16), 0);
 
-                var ripple = new TypedValue();
-                _context.Theme!.ResolveAttribute(
-                    global::Android.Resource.Attribute.SelectableItemBackground,
-                    ripple, true);
-                if (ripple.ResourceId != 0)
-                {
-                    row.SetBackgroundResource(ripple.ResourceId);
-                }
-
                 var icon = new ImageView(_context)
                 {
                     LayoutParameters = new LinearLayout.LayoutParams(Dp(24), Dp(24)),
@@ -538,6 +617,7 @@ namespace AdaptiveShell.Platforms.Android
                 };
                 label.SetTextSize(ComplexUnitType.Sp, 16);
                 row.AddView(label);
+                ApplyDrawerRowColors(row, ResolveOnSurfaceColor());
 
                 row.Click += (_, _) =>
                 {
@@ -747,6 +827,19 @@ namespace AdaptiveShell.Platforms.Android
 
         public void Dispose()
         {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            if (_configListener is not null)
+            {
+                _activity?.RemoveOnConfigurationChangedListener(_configListener);
+                _configListener.Dispose();
+                _configListener = null;
+            }
+
             _linearLayout.LayoutChange -= OnRootLayoutChange;
 
             if (_navigationView != null)
@@ -832,20 +925,48 @@ namespace AdaptiveShell.Platforms.Android
 
         public void UpdateColors()
         {
-            var selected = _virtualView.GetEffectiveSelectedItemColor();
-            if (selected is null)
+            int onSurface = ResolveOnSurfaceColor();
+            int container = ResolveDrawerColor(_context);
+
+            // 原生控件缓存构造时的色值,配置变化后显式刷新;页面内容由 MAUI
+            // 的 AppThemeBinding 处理,这里不重建也不改动页面/导航状态。
+            _navigationView.BackgroundTintList = ColorStateList.ValueOf(
+                new global::Android.Graphics.Color(container));
+            _toolbar.BackgroundTintList = ColorStateList.ValueOf(
+                new global::Android.Graphics.Color(
+                    ResolveThemeColor(_context, container, "colorSurface")));
+            _toolbar.SetTitleTextColor(new global::Android.Graphics.Color(onSurface));
+            _toolbar.SetNavigationIconTint(onSurface);
+
+            if (_drawerPanel.Background is global::Android.Graphics.Drawables.GradientDrawable drawerBackground)
             {
-                return;
+                drawerBackground.SetColor(container);
             }
 
-            int selectedInt = selected.ToPlatform();
-            var unselected = _virtualView.GetEffectiveUnselectedItemColor();
+            if (_navHeaderFrameLayout?.GetChildAt(0) is ImageButton menuButton)
+            {
+                menuButton.ImageTintList = ColorStateList.ValueOf(
+                    new global::Android.Graphics.Color(onSurface));
+            }
 
+            if (_drawerPanel.GetChildAt(0) is LinearLayout drawerList)
+            {
+                for (int i = 0; i < drawerList.ChildCount; i++)
+                {
+                    if (drawerList.GetChildAt(i) is LinearLayout row)
+                    {
+                        ApplyDrawerRowColors(row, onSurface);
+                    }
+                }
+            }
+
+            var selected = _virtualView.GetEffectiveSelectedItemColor();
+            var unselected = _virtualView.GetEffectiveUnselectedItemColor();
+            int selectedInt = selected?.ToPlatform()
+                ?? ResolveThemeColor(_context, onSurface,
+                    "colorOnSecondaryContainer", "colorPrimary");
             int uncheckedInt = unselected?.ToPlatform()
-                ?? _navigationView.ItemIconTintList?.GetColorForState(
-                    new[] { -global::Android.Resource.Attribute.StateChecked },
-                    global::Android.Graphics.Color.Gray)
-                ?? global::Android.Graphics.Color.Gray;
+                ?? ResolveThemeColor(_context, onSurface, "colorOnSurfaceVariant");
 
             var states = new[]
             {
@@ -857,7 +978,43 @@ namespace AdaptiveShell.Platforms.Android
             _navigationView.ItemIconTintList = tintList;
             _navigationView.ItemTextColor = tintList;
             _navigationView.ItemActiveIndicatorColor =
-                ColorStateList.ValueOf(selected.WithAlpha(0.2f).ToPlatform());
+                ColorStateList.ValueOf(new global::Android.Graphics.Color(
+                    selected?.WithAlpha(0.2f).ToPlatform()
+                        ?? ResolveThemeColor(_context, container, "colorSecondaryContainer")));
+            _navigationView.ItemRippleColor = ColorStateList.ValueOf(
+                new global::Android.Graphics.Color(
+                    ResolveThemeColor(_context, (onSurface & 0x00ffffff) | 0x1f000000,
+                        "colorControlHighlight")));
+        }
+
+        private int ResolveOnSurfaceColor() =>
+            ResolveThemeColor(_context,
+                _isNight ? global::Android.Graphics.Color.White : global::Android.Graphics.Color.Black,
+                "colorOnSurface");
+
+        private void ApplyDrawerRowColors(LinearLayout row, int onSurface)
+        {
+            var ripple = new TypedValue();
+            _context.Theme!.ResolveAttribute(
+                global::Android.Resource.Attribute.SelectableItemBackground, ripple, true);
+            if (ripple.ResourceId != 0)
+            {
+                row.SetBackgroundResource(ripple.ResourceId);
+            }
+
+            for (int i = 0; i < row.ChildCount; i++)
+            {
+                switch (row.GetChildAt(i))
+                {
+                    case TextView label:
+                        label.SetTextColor(new global::Android.Graphics.Color(onSurface));
+                        break;
+                    case ImageView icon:
+                        icon.ImageTintList = ColorStateList.ValueOf(
+                            new global::Android.Graphics.Color(onSurface));
+                        break;
+                }
+            }
         }
 
         private async void LoadIconAsync(AShellItem item, IMenuItem menuItem)

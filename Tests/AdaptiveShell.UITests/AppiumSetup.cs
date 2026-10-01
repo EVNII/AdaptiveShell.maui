@@ -19,8 +19,10 @@ public static class AppiumSetup
 {
     public const string BundleId = "com.companyname.exampleashellapp";
 
-    // iOS 首次会话要现场编译 WebDriverAgent,远超默认 60s 的 HTTP 超时
     static readonly TimeSpan CommandTimeout = TimeSpan.FromMinutes(10);
+    // iOS 首次会话需启动模拟器、安装 App 和编译 WebDriverAgent,
+    // 整个会话创建预算须覆盖这些连续步骤,而不只是 WDA 启动超时。
+    static readonly TimeSpan IosCommandTimeout = TimeSpan.FromMinutes(15);
 
     public static string Platform =>
         Environment.GetEnvironmentVariable("UITEST_PLATFORM")?.ToLowerInvariant()
@@ -86,10 +88,13 @@ public static class AppiumSetup
         }
         AddIfSet(options, "appium:udid", Environment.GetEnvironmentVariable("UITEST_DEVICE_UDID"));
         options.DeviceName = Environment.GetEnvironmentVariable("UITEST_DEVICE_NAME") ?? "iPhone 16";
+        // CI 已预启动无窗口的模拟器;避免 Appium 为显示窗口再次重启。
+        options.AddAdditionalAppiumOption("appium:isHeadless", true);
+        options.AddAdditionalAppiumOption("appium:simulatorStartupTimeout", 600000);
         // 干净机器上首个会话要现场编译 WebDriverAgent,远超默认 60s 的启动超时
         options.AddAdditionalAppiumOption("appium:wdaLaunchTimeout", 600000);
         options.AddAdditionalAppiumOption("appium:newCommandTimeout", 300);
-        return new IOSDriver(serverUri, options, CommandTimeout);
+        return new IOSDriver(serverUri, options, IosCommandTimeout);
     }
 
     static MacDriver CreateMacCatalyst(Uri serverUri)
