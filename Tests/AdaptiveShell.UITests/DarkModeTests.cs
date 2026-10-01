@@ -1,5 +1,6 @@
 using NUnit.Framework;
 using OpenQA.Selenium;
+using OpenQA.Selenium.Appium;
 using OpenQA.Selenium.Support.UI;
 
 namespace AdaptiveShell.UITests;
@@ -54,7 +55,29 @@ public class DarkModeTests : BaseTest
             {
                 Assert.That(childEntry, Is.Not.Null,
                     "Expected the Music group child entry before selecting its page.");
-                childEntry!.Click();
+                // 截图/抽屉动画期间原生节点可能被替换;每次重试都重新定位,
+                // 只有真实可见条目的 Click 成功后才继续后面的页面状态断言。
+                var selectChildWait = new WebDriverWait(Driver, TimeSpan.FromSeconds(30));
+                selectChildWait.IgnoreExceptionTypes(typeof(StaleElementReferenceException));
+                selectChildWait.Until(driver =>
+                {
+                    foreach (var locator in new[]
+                    {
+                        MobileBy.AccessibilityId("music"), MobileBy.Id("music"),
+                        MobileBy.AccessibilityId("landing-music"), MobileBy.Id("landing-music"),
+                    })
+                    {
+                        var entry = driver.FindElements(locator)
+                            .FirstOrDefault(element => element.Displayed && element.Enabled);
+                        if (entry is not null)
+                        {
+                            entry.Click();
+                            return true;
+                        }
+                    }
+
+                    return false;
+                });
             }
 
             // 在子页留下状态,主题切换期间不重新导航或重启 App。
