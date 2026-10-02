@@ -24,11 +24,21 @@ public static class Appearance
                 var adb = AdbPath();
                 var device = DeviceSerial();
                 var expected = dark ? "yes" : "no";
-                var setter = Run(adb, "-s", device, "shell", "cmd", "uimode", "night", expected);
+                var rootTheme = Environment.GetEnvironmentVariable("UITEST_ANDROID_THEME_ROOT") == "true";
+                if (rootTheme && (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true"
+                    || Environment.GetEnvironmentVariable("GITHUB_JOB") != "uitest-android"
+                    || !device.StartsWith("emulator-", StringComparison.Ordinal)
+                    || Run(adb, "-s", device, "shell", "getprop", "ro.build.version.sdk").Trim() != "29"
+                    || Run(adb, "-s", device, "shell", "getprop", "ro.kernel.qemu").Trim() != "1"
+                    || Run(adb, "-s", device, "shell", "su", "root", "id", "-u").Trim() != "0"))
+                    throw new InvalidOperationException("Privileged theme commands require the verified API29 CI emulator.");
+                var setter = rootTheme
+                    ? Run(adb, "-s", device, "shell", "su", "root", "cmd", "uimode", "night", expected)
+                    : Run(adb, "-s", device, "shell", "cmd", "uimode", "night", expected);
                 var actual = Run(adb, "-s", device, "shell", "cmd", "uimode", "night").Trim();
                 var evidence = new
                 {
-                    requested = expected, setter_output = setter, actual,
+                    requested = expected, setter_output = setter, actual, privileged_theme_command = rootTheme,
                     setup_complete = Run(adb, "-s", device, "shell", "settings", "get", "secure", "user_setup_complete").Trim(),
                     device_provisioned = Run(adb, "-s", device, "shell", "settings", "get", "global", "device_provisioned").Trim(),
                     uimode_service = Run(adb, "-s", device, "shell", "dumpsys", "uimode"),

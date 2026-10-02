@@ -1,4 +1,4 @@
-name: Android 29 theme readback complete-suite diagnostic
+name: Android 29 native theme permission complete-suite diagnostic
 
 on:
   workflow_dispatch:
@@ -89,8 +89,9 @@ jobs:
           disable-animations: true
           script: |
             adb shell settings put global anr_show_background 0 || true
+            python3 .github/workflows/scripts/android-theme-permissions-diagnostic.py
             until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
-            UITEST_PLATFORM=android UITEST_FORM=${{ matrix.form }} UITEST_APP_PATH="$GITHUB_WORKSPACE/app/com.companyname.exampleashellapp-Signed.apk" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+            UITEST_ANDROID_THEME_ROOT=true UITEST_PLATFORM=android UITEST_FORM=${{ matrix.form }} UITEST_APP_PATH="$GITHUB_WORKSPACE/app/com.companyname.exampleashellapp-Signed.apk" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
 
       - name: Upload shots
         if: always()
