@@ -3,10 +3,13 @@
 
 Usage: python3 verify_windows_theme.py ARTIFACT_ROOT --strict
 Required: TestResults/windows-{light,dark,light-restored}.{json,xml}, plus the
-PNG named by each JSON. JSON contains stage, png, window and elements frames.
-Frames are the actual app-session Location/Size in screen coordinates. The PNG
-must be a window capture: both dimensions must establish the same scale. No
-desktop crop, guessed offsets or launch-only accessibility frames are reused.
+PNG named by each JSON. JSON contains stage, png, coordinateSource, window and
+elements frames. window is copied from that phase's native PageSource Window;
+elements are the app-session Location/Size, checked against the unique matching
+XML AutomationId. The PNG must match the XML Window's 1x dimensions (at most
+one pixel of rounding). Window-position APIs can include invisible borders;
+nativeWindow/sessionWindow are diagnostic records, never screenshot origins.
+Arbitrary scaling, guessed offsets and launch-only frames are rejected.
 
 Icon sampling deliberately supports the example's compact NavigationView only:
 each menu item must be a near-square button, not a wide text-bearing row. The
@@ -62,21 +65,43 @@ def frame(value, name):
     return result
 
 
-def map_frames(metadata, png):
+def source_frame(node, name):
+    try:
+        value = {key: float(node.attrib[key]) for key in ("x", "y", "width", "height")}
+    except (KeyError, ValueError) as error:
+        raise ValueError(f"{name} XML node has no usable native bounds") from error
+    return frame(value, name)
+
+
+def map_frames(metadata, png, source):
+    if metadata.get("coordinateSource") != "windows-page-source":
+        raise ValueError("JSON must identify windows-page-source as its captured Window coordinate source")
+    if source.tag.rsplit("}", 1)[-1] != "Window":
+        raise ValueError("The app-session XML must have a top-level Window")
     window = frame(metadata.get("window"), "window")
-    sx, sy = png.width / window["width"], png.height / window["height"]
-    # Independent dimensions must agree within one raster-pixel rounding error.
-    scale = (sx + sy) / 2
-    residuals = [abs(png.width - window["width"] * scale),
-                 abs(png.height - window["height"] * scale)]
-    if max(residuals) > 1 or abs(sx / sy - 1) > .005:
-        raise ValueError("PNG dimensions do not match the recorded Window at one uniform scale")
+    xml_window = source_frame(source, "Window")
+    if window != xml_window:
+        raise ValueError("JSON Window bounds do not agree exactly with the same-phase XML Window")
+    # Actual captures establish the PageSource Window as the screenshot frame.
+    # Native window-position APIs include invisible borders and are not used to
+    # invent an offset. Every API element below must corroborate this XML tree.
+    scale = 1
+    residuals = [abs(png.width - window["width"]), abs(png.height - window["height"])]
+    if max(residuals) > 1:
+        raise ValueError("PNG dimensions do not match the PageSource Window at 1x pixels")
     elements = metadata.get("elements")
     if not isinstance(elements, dict):
         raise ValueError("Missing elements frames")
     mapped = {}
+    xml_elements = {}
     for name in (*ITEMS, "counterBtn"):
         original = frame(elements.get(name), name)
+        candidates = [node for node in source.iter() if node.get("AutomationId") == name]
+        if len(candidates) != 1:
+            raise ValueError(f"Expected one same-phase XML AutomationId {name}; found {len(candidates)}")
+        xml_elements[name] = source_frame(candidates[0], name)
+        if original != xml_elements[name]:
+            raise ValueError(f"API {name} Location/Size does not agree exactly with its same-phase XML bounds")
         transformed = {"x": (original["x"] - window["x"]) * scale,
                        "y": (original["y"] - window["y"]) * scale,
                        "width": original["width"] * scale,
@@ -86,10 +111,13 @@ def map_frames(metadata, png):
                 or transformed["y"] + transformed["height"] > png.height):
             raise ValueError(f"Recorded {name} frame is not wholly inside the captured Window")
         mapped[name] = transformed
-    return mapped, {"model": "window_relative", "scale": scale,
-                    "scale_from_width": sx, "scale_from_height": sy,
+    diagnostics = {name: frame(metadata[name], name)
+                   for name in ("nativeWindow", "sessionWindow") if name in metadata}
+    return mapped, {"model": "windows_page_source_window_pixels", "scale": scale,
                     "dimension_residual_pixels": residuals,
                     "origin_screen": [window["x"], window["y"]], "window": window,
+                    "xml_window": xml_window, "xml_element_frames": xml_elements,
+                    "api_window_diagnostics": diagnostics,
                     "element_frames_pixels": mapped}
 
 
@@ -214,7 +242,7 @@ def unique_pairs(root):
 
 def analyze(json_path, xml_path, png_path, stage, metadata):
     png = PNG(png_path)
-    elements, coordinates = map_frames(metadata, png)
+    elements, coordinates = map_frames(metadata, png, ET.parse(xml_path).getroot())
     button = elements["counterBtn"]
     if button["width"] < png.width * .30:
         raise ValueError("Counter button is too narrow to establish the example's content column")
@@ -247,7 +275,7 @@ def main():
         for json_path, xml_path, png_path, stage, metadata in pairs:
             try:
                 results.append(analyze(json_path, xml_path, png_path, stage, metadata))
-            except (OSError, ValueError, KeyError, zlib.error, struct.error) as error:
+            except (OSError, ValueError, KeyError, ET.ParseError, zlib.error, struct.error) as error:
                 errors.append({"stage": stage, "json": str(json_path), "png": str(png_path), "error": str(error)})
     else:
         errors.append({"error": "artifact_root must be an existing directory"})

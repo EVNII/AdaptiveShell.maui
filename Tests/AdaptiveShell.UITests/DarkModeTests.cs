@@ -3,6 +3,9 @@ using OpenQA.Selenium;
 using OpenQA.Selenium.Appium;
 using OpenQA.Selenium.Support.UI;
 using System.Text.Json;
+using System.Text;
+using System.Xml.Linq;
+using System.Globalization;
 
 namespace AdaptiveShell.UITests;
 
@@ -14,6 +17,11 @@ public class DarkModeTests : BaseTest
     {
         try
         {
+            if (AppiumSetup.Platform == "windows")
+            {
+                // 用非零位置验证窗口截图坐标,避免原点恰为 (0,0) 时掩盖换算错误。
+                Driver.Manage().Window.Position = new System.Drawing.Point(100, 80);
+            }
             Appearance.SetDark(false);
             var isIosWide = AppiumSetup.Platform == "ios" && AppiumSetup.Form == "wide";
             if (isIosWide)
@@ -207,11 +215,25 @@ public class DarkModeTests : BaseTest
         var results = Path.Combine(AppiumSetup.RepoRoot, "TestResults");
         Directory.CreateDirectory(results);
         var window = Driver.FindElement(By.XPath("/*"));
+        var source = Driver.PageSource;
+        var sourceWindow = XDocument.Parse(source).Root
+            ?? throw new InvalidOperationException("Windows page source has no root.");
+        Assert.That(sourceWindow.Name.LocalName, Is.EqualTo("Window"),
+            "The Windows app-session source must have a top-level Window.");
+        var sessionWindow = Driver.Manage().Window;
+        var sessionLocation = sessionWindow.Position;
+        var sessionSize = sessionWindow.Size;
         var evidence = new
         {
             stage,
             png = $"shots/windows-{AppiumSetup.Form ?? "default"}/{sequence:00}-theme-{stage}.png",
-            window = Bounds(window),
+            coordinateSource = "windows-page-source",
+            // 位置 API 与 source 的窗口边界可能不同;使用完整原生 source
+            // 矩形,并由验证器核对同一 XML 内所有元素与 API bounds。
+            window = SourceBounds(sourceWindow),
+            nativeWindow = Bounds(window),
+            sessionWindow = new { x = sessionLocation.X, y = sessionLocation.Y,
+                width = sessionSize.Width, height = sessionSize.Height },
             elements = new
             {
                 home = Bounds(Driver.WaitForAccessibilityId("home")),
@@ -220,7 +242,8 @@ public class DarkModeTests : BaseTest
                 counterBtn = Bounds(Driver.WaitForAccessibilityId("counterBtn")),
             },
         };
-        File.WriteAllText(Path.Combine(results, $"windows-{stage}.xml"), Driver.PageSource);
+        // WinAppDriver 的 XML 声明为 UTF-16;保存时保留相同的实际编码。
+        File.WriteAllText(Path.Combine(results, $"windows-{stage}.xml"), source, Encoding.Unicode);
         // 缺失截图或原生坐标必须失败;不用会吞掉截图错误的普通 Shot。
         Shots.Save(Driver, $"theme-{stage}", sequence);
         File.WriteAllText(Path.Combine(results, $"windows-{stage}.json"),
@@ -232,6 +255,13 @@ public class DarkModeTests : BaseTest
         var location = element.Location;
         var size = element.Size;
         return new { x = location.X, y = location.Y, width = size.Width, height = size.Height };
+    }
+
+    static object SourceBounds(XElement window)
+    {
+        double Value(string name) => double.Parse(window.Attribute(name)?.Value
+            ?? throw new InvalidOperationException($"Window source is missing {name}."), CultureInfo.InvariantCulture);
+        return new { x = Value("x"), y = Value("y"), width = Value("width"), height = Value("height") };
     }
 
     // 当前页面(无论 home 还是组子页)都有 counterBtn,适合当探针
