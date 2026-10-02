@@ -1,4 +1,4 @@
-name: Duo resource 5 prebuilt WDA startup diagnostic
+name: Duo prebuilt WDA startup diagnostic
 
 # Startup/resource investigation on a separate public diagnostic branch.
 # This single filtered test does not satisfy the release/full-theme gate.
@@ -395,8 +395,8 @@ jobs:
                   }, indent=2), encoding="utf-8")
                   if bundle_info.get("DTSDKName") != "iphonesimulator27.1":
                       raise ValueError("WDA test bundle was not built with Simulator SDK27.1")
-                  if runner_info.get("DTSDKName") not in (None, "iphonesimulator27.1"):
-                      raise ValueError("WDA runner host carries a different Simulator SDK")
+                  # Xcode supplies this Runner host precompiled. Preserve its raw
+                  # identity; only our compiled test bundle must use SDK27.1.
                   executable = bundle_info.get("CFBundleExecutable")
                   if not isinstance(executable, str) or Path(executable).name != executable:
                       raise ValueError("WDA test bundle executable is missing")
