@@ -29,6 +29,7 @@ public class SessionHost
             {
                 Driver.WaitForAccessibilityId("home", 30);
                 Shots.Save(Driver, "launch", 1);
+                File.WriteAllText(Path.Combine(AppiumSetup.RepoRoot, "TestResults", "window-launch.xml"), Driver.PageSource);
                 return;
             }
             catch (WebDriverTimeoutException)
