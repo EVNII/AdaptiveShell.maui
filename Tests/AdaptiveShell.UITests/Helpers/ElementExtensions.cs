@@ -225,9 +225,24 @@ public static class ElementExtensions
         {
             try
             {
-                Directory.CreateDirectory("TestResults");
-                File.AppendAllText(Path.Combine("TestResults", "ios-sidebar-home-visibility.jsonl"),
-                    JsonSerializer.Serialize(record) + Environment.NewLine);
+                var resultsDirectory = Path.Combine(AppiumSetup.RepoRoot, "TestResults");
+                Directory.CreateDirectory(resultsDirectory);
+                var entry = new Dictionary<string, object?>
+                {
+                    ["schema_version"] = 1,
+                    ["trace_enabled"] = true,
+                    ["platform"] = AppiumSetup.Platform,
+                    ["form"] = AppiumSetup.Form,
+                    ["github_run_id"] = Environment.GetEnvironmentVariable("GITHUB_RUN_ID"),
+                    ["github_run_attempt"] = Environment.GetEnvironmentVariable("GITHUB_RUN_ATTEMPT"),
+                    ["github_sha"] = Environment.GetEnvironmentVariable("GITHUB_SHA"),
+                    ["github_job"] = Environment.GetEnvironmentVariable("GITHUB_JOB"),
+                    ["device_udid"] = Environment.GetEnvironmentVariable("UITEST_DEVICE_UDID"),
+                };
+                foreach (var property in JsonSerializer.SerializeToElement(record).EnumerateObject())
+                    entry.Add(property.Name, property.Value);
+                File.AppendAllText(Path.Combine(resultsDirectory, "ios-sidebar-home-visibility.jsonl"),
+                    JsonSerializer.Serialize(entry) + Environment.NewLine);
             }
             catch (Exception ex)
             {
@@ -237,10 +252,11 @@ public static class ElementExtensions
 
         public void SaveLateTimeoutSource()
         {
-            var path = Path.Combine("TestResults", $"ios-sidebar-home-timeout-late-{waitId}.xml");
+            var resultsDirectory = Path.Combine(AppiumSetup.RepoRoot, "TestResults");
+            var path = Path.Combine(resultsDirectory, $"ios-sidebar-home-timeout-late-{waitId}.xml");
             try
             {
-                Directory.CreateDirectory("TestResults");
+                Directory.CreateDirectory(resultsDirectory);
                 var startedAt = DateTimeOffset.UtcNow;
                 File.WriteAllText(path, driver.PageSource);
                 Append(new

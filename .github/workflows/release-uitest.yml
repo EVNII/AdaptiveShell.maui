@@ -93,6 +93,75 @@ jobs:
           UITEST_DEVICE_NAME="${{ matrix.device }}" UITEST_DEVICE_UDID="${{ matrix.udid }}" \
           UITEST_APP_PATH="$GITHUB_WORKSPACE/app/ExampleAShellApp.app" \
             dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+      - name: Verify native visibility trace evidence
+        if: always()
+        env:
+          TRACE_DEVICE_UDID: ${{ matrix.udid }}
+        run: |
+          python3 - <<'PY'
+          import json, math, os, pathlib, re
+          path = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "TestResults/ios-sidebar-home-visibility.jsonl"
+          assert path.is_file() and path.stat().st_size > 0, f"Missing or empty native visibility trace: {path}"
+          expected = {
+              "schema_version": 1, "trace_enabled": True, "platform": "ios", "form": "wide",
+              "github_run_id": os.environ["GITHUB_RUN_ID"],
+              "github_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "github_sha": os.environ["GITHUB_SHA"], "github_job": os.environ["GITHUB_JOB"],
+              "device_udid": os.environ["TRACE_DEVICE_UDID"],
+          }
+          assert expected["github_run_id"].isdigit() and expected["github_run_attempt"].isdigit()
+          assert re.fullmatch(r"[0-9a-f]{40}", expected["github_sha"])
+          assert expected["github_job"] and expected["device_udid"]
+          originals, batches, records = {}, 0, []
+          def nonempty(value):
+              return isinstance(value, str) and bool(value.strip())
+          def finite_nonnegative(value):
+              return type(value) in (int, float) and math.isfinite(value) and value >= 0
+          def selected(value):
+              assert isinstance(value, dict)
+              assert all(nonempty(value.get(key)) for key in ("locator", "element_uuid", "observed_at"))
+              assert type(value.get("displayed")) is bool
+          for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+              assert line.strip(), f"Blank trace record at line {number}"
+              row = json.loads(line)
+              assert isinstance(row, dict), f"Invalid trace object at line {number}"
+              assert all(type(row.get(key)) is type(value) and row[key] == value for key, value in expected.items()), f"Trace identity/schema mismatch at line {number}"
+              assert nonempty(row.get("wait_id"))
+              event = row.get("event_type")
+              assert event in {"original_first_match_before_diagnostic_reads", "during_home_wait", "after_home_wait_timeout_late_source", "late_source_error"}
+              if event in {"original_first_match_before_diagnostic_reads", "during_home_wait"}:
+                  assert nonempty(row.get("test"))
+                  assert type(row.get("original_timeout_seconds")) is int and row["original_timeout_seconds"] > 0
+              if event == "original_first_match_before_diagnostic_reads":
+                  selected(row)
+                  assert finite_nonnegative(row.get("elapsed_seconds"))
+                  originals[row["wait_id"]] = row
+                  records.append(row)
+              elif event == "during_home_wait":
+                  selected(row.get("selected_first"))
+                  original = originals.get(row["wait_id"])
+                  assert original is not None, f"Diagnostic reads lack a preceding original observation at line {number}"
+                  assert all(row["selected_first"][key] == original[key] for key in ("locator", "element_uuid", "displayed", "observed_at"))
+                  assert row["test"] == original["test"] and row["original_timeout_seconds"] == original["original_timeout_seconds"]
+                  assert finite_nonnegative(row.get("started_elapsed_seconds")) and finite_nonnegative(row.get("completed_elapsed_seconds"))
+                  assert row["started_elapsed_seconds"] == original["elapsed_seconds"] <= row["completed_elapsed_seconds"]
+                  assert isinstance(row.get("locator_matches"), list) and isinstance(row.get("nodes"), dict) and isinstance(row.get("errors"), list)
+                  for match in row["locator_matches"]:
+                      assert isinstance(match, dict) and nonempty(match.get("locator")) and isinstance(match.get("element_uuids"), list)
+                      assert all(nonempty(uuid) for uuid in match["element_uuids"])
+                  for uuid, node in row["nodes"].items():
+                      assert nonempty(uuid) and isinstance(node, dict) and node.get("element_uuid") == uuid
+                      assert node.get("displayed") is None or type(node["displayed"]) is bool
+                  batches += 1
+              elif event == "after_home_wait_timeout_late_source":
+                  source = pathlib.Path(row.get("source", ""))
+                  assert source.parent == path.parent and source.name.startswith("ios-sidebar-home-timeout-late-")
+                  assert source.is_file() and source.stat().st_size > 0, f"Missing late source at line {number}"
+              else:
+                  assert nonempty(row.get("error"))
+          assert records and batches > 0, "No actual original selected-first observation and diagnostic batch were captured"
+          print(json.dumps({"trace_file": str(path), "original_selected_records": len(records), "diagnostic_batches": batches, "original_false_records": sum(row["displayed"] is False for row in records), "identity": expected}, sort_keys=True))
+          PY
       - name: Upload shots
         if: always()
         uses: actions/upload-artifact@v4
