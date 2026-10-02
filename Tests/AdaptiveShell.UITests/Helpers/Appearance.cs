@@ -17,6 +17,8 @@ public static class Appearance
 
     public static void SetDark(bool dark)
     {
+        string? iosSetterOutput = null;
+        string? iosImmediateAppearance = null;
         switch (AppiumSetup.Platform)
         {
             case "android":
@@ -29,10 +31,11 @@ public static class Appearance
                 // 并回读系统实际外观,避免超时放宽后把未生效的切换当成通过。
                 var expected = dark ? "dark" : "light";
                 var device = DeviceSerial();
-                Run("xcrun", IosAppearanceTimeout,
+                iosSetterOutput = Run("xcrun", IosAppearanceTimeout,
                     "simctl", "ui", device, "appearance", expected);
                 var actual = Run("xcrun", IosAppearanceTimeout,
                     "simctl", "ui", device, "appearance").Trim();
+                iosImmediateAppearance = actual;
                 if (actual != expected)
                 {
                     throw new InvalidOperationException(
@@ -54,6 +57,93 @@ public static class Appearance
 
         // 等主题传播与页面重渲染
         Thread.Sleep(2500);
+        if (AppiumSetup.Platform == "ios"
+            && Environment.GetEnvironmentVariable("UITEST_IOS_SYSTEM_THEME_DIAGNOSTIC") is not null)
+            CaptureIosSystemTheme(dark, iosSetterOutput!, iosImmediateAppearance!);
+    }
+
+    static void CaptureIosSystemTheme(bool dark, string setterOutput, string immediateAppearance)
+    {
+        var device = DeviceSerial();
+        var version = SessionHost.Driver.Capabilities.GetCapability("platformVersion")?.ToString();
+        if (Environment.GetEnvironmentVariable("UITEST_IOS_SYSTEM_THEME_DIAGNOSTIC") != "true"
+            || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true"
+            || Environment.GetEnvironmentVariable("GITHUB_JOB") != "uitest-ios-18"
+            || AppiumSetup.Form != "compact" || version is null
+            || !version.StartsWith("18.", StringComparison.Ordinal)
+            || !Guid.TryParseExact(device, "D", out _)
+            || AppiumSetup.BundleId != "com.companyname.exampleashellapp")
+            throw new InvalidOperationException("Native theme capture requires the explicit iOS18 compact CI diagnostic.");
+        var expected = dark ? "dark" : "light";
+        var results = Path.Combine(AppiumSetup.RepoRoot, "TestResults");
+        Directory.CreateDirectory(results);
+        var prefix = $"ios-native-theme-{DateTime.UtcNow.Ticks}-{expected}";
+        var record = new Dictionary<string, object?>
+        {
+            ["requested"] = expected, ["setter_output"] = setterOutput,
+            ["test_full_name"] = NUnit.Framework.TestContext.CurrentContext.Test.FullName,
+            ["test_id"] = NUnit.Framework.TestContext.CurrentContext.Test.ID,
+            ["immediate_system_appearance"] = immediateAppearance,
+            ["device_udid"] = device, ["bundle_id"] = AppiumSetup.BundleId,
+            ["platform_version"] = version, ["run_id"] = Environment.GetEnvironmentVariable("GITHUB_RUN_ID"),
+            ["run_attempt"] = Environment.GetEnvironmentVariable("GITHUB_RUN_ATTEMPT"),
+            ["head_sha"] = Environment.GetEnvironmentVariable("GITHUB_SHA"),
+            ["capture_begin_utc"] = DateTime.UtcNow.ToString("O"),
+        };
+        try
+        {
+            record["system_appearance_before_screenshots"] = Run("xcrun", IosAppearanceTimeout,
+                "simctl", "ui", device, "appearance").Trim();
+            record["active_app_info"] = SessionHost.Driver.ExecuteScript("mobile:activeAppInfo");
+            var container = Run("xcrun", IosAppearanceTimeout, "simctl", "get_app_container",
+                device, AppiumSetup.BundleId, "data").Trim();
+            if (!Path.IsPathFullyQualified(container) || !Directory.Exists(container))
+                throw new InvalidOperationException("Native app data container is not an existing absolute path.");
+            var nativeLog = Path.Combine(container, "Documents", "ios-native-theme.jsonl");
+            record["native_log_source"] = nativeLog;
+            CopyNativeLog("before");
+            var wda = Path.Combine(results, prefix + "-wda.png");
+            record["wda_screenshot_begin_utc"] = DateTime.UtcNow.ToString("O");
+            SessionHost.Driver.GetScreenshot().SaveAsFile(wda);
+            record["wda_png"] = Path.GetFileName(wda);
+            record["wda_screenshot_end_utc"] = DateTime.UtcNow.ToString("O");
+            var native = Path.Combine(results, prefix + "-simctl.png");
+            record["simctl_screenshot_begin_utc"] = DateTime.UtcNow.ToString("O");
+            record["simctl_screenshot_output"] = Run("xcrun", IosAppearanceTimeout,
+                "simctl", "io", device, "screenshot", native);
+            if (!File.Exists(native) || new FileInfo(native).Length <= 24)
+                throw new InvalidOperationException("Native simulator screenshot was not saved.");
+            record["simctl_png"] = Path.GetFileName(native);
+            record["simctl_screenshot_end_utc"] = DateTime.UtcNow.ToString("O");
+            CopyNativeLog("after");
+            record["system_appearance_after_screenshots"] = Run("xcrun", IosAppearanceTimeout,
+                "simctl", "ui", device, "appearance").Trim();
+            record["status"] = "captured";
+
+            void CopyNativeLog(string when)
+            {
+                var bytes = File.ReadAllBytes(nativeLog);
+                var path = Path.Combine(results, prefix + $"-{when}.jsonl");
+                File.WriteAllBytes(path, bytes);
+                record[$"native_log_{when}"] = Path.GetFileName(path);
+                record[$"native_log_{when}_bytes"] = bytes.Length;
+                if (bytes.Length == 0 || bytes[^1] != (byte)'\n')
+                    throw new InvalidOperationException("Native theme JSONL capture is empty or ends in an incomplete record.");
+            }
+        }
+        catch (Exception error)
+        {
+            record["status"] = "capture-error";
+            record["error"] = error.ToString();
+            throw;
+        }
+        finally
+        {
+            record["capture_end_utc"] = DateTime.UtcNow.ToString("O");
+            File.WriteAllText(Path.Combine(results, prefix + ".json"),
+                System.Text.Json.JsonSerializer.Serialize(record,
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        }
     }
 
     static void SetWindowsAppearance(bool dark)
