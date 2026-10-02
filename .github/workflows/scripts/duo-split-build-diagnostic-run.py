@@ -751,7 +751,8 @@ def resource_observation(stage):
              "commands": observations}
     (RESULTS / f"duo-split-resources-{stage}.json").write_text(
         json.dumps(value, indent=2), encoding="utf-8")
-    event("resource-observation-complete", **value)
+    event("resource-observation-complete", observation_stage=stage,
+          scope=value["scope"], commands=observations)
     return 0
 
 if __name__ == "__main__":
