@@ -145,6 +145,11 @@ jobs:
         if: ${{ env.DUO_REMOVE_UNUSED_27_0_RUNTIME == 'true' }}
         timeout-minutes: 8
         run: python3 "$RUNNER_TEMP/duo-startup-probe.py" --prune-unused-ios27
+      - name: Disable only Spotlight indexing in this ephemeral Duo CI VM
+        timeout-minutes: 2
+        env:
+          DUO_DIAGNOSTIC_DISABLE_SPOTLIGHT_INDEXING: 'true'
+        run: python3 "$RUNNER_TEMP/duo-startup-probe.py" --disable-spotlight-indexing
       - name: Install the original exact Duo runtime
         timeout-minutes: 30
         run: xcodebuild -downloadPlatform iOS -buildVersion 24A94401 -architectureVariant arm64

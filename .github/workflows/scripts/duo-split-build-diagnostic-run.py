@@ -1076,7 +1076,139 @@ def resource_observation(stage):
           scope=value["scope"], commands=observations)
     return 0
 
+def parse_spotlight_status(text, volumes):
+    """Accept only explicit per-volume native mdutil status, never an inferred state."""
+    states = {}
+    current = None
+    allowed = {"Indexing enabled.": "enabled", "Indexing disabled.": "disabled",
+               "Indexing and searching disabled.": "disabled"}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.endswith(":") and line[:-1] in volumes:
+            current = line[:-1]
+            if current in states:
+                raise ValueError("Duplicate mdutil volume status")
+            states[current] = None
+        elif current is not None and line in allowed and states[current] is None:
+            states[current] = allowed[line]
+        else:
+            raise ValueError("Unrecognized native mdutil status; refusing inferred indexing state")
+    if set(states) != set(volumes) or any(state is None for state in states.values()):
+        raise ValueError("Native mdutil status omitted a requested volume")
+    return states
+
+
+def disable_spotlight_indexing():
+    """One ephemeral-CI indexing-only comparison, before runtime installation."""
+    proof = {"scope": "CI indexing-only diagnostic; not a resource root cause or UI result",
+             "status": "failed", "volumes": ["/", "/System/Volumes/Data"],
+             "budget_seconds": 60, "commands": [],
+             "started_utc": datetime.now(timezone.utc).isoformat()}
+    output = RESULTS / "duo-spotlight-indexing.json"
+    pending = output.with_name(output.name + ".tmp")
+    if any(path.exists() or path.is_symlink() for path in (output, pending)):
+        event("spotlight-indexing-refused-existing-proof", path=str(output))
+        return 1
+    deadline = time.monotonic() + 60
+
+    def native(command, name, seconds):
+        seconds_left = deadline - time.monotonic()
+        if seconds_left <= 0:
+            raise TimeoutError("Spotlight indexing setup exceeded its shared60s budget")
+        row = {"command": command, "started_utc": datetime.now(timezone.utc).isoformat(),
+               "stdout_file": f"duo-spotlight-{name}.stdout.txt",
+               "stderr_file": f"duo-spotlight-{name}.stderr.txt",
+               "timeout_seconds": min(seconds, seconds_left)}
+        proof["commands"].append(row)
+        process = None
+        try:
+            with (RESULTS / row["stdout_file"]).open("wb") as stdout, (RESULTS / row["stderr_file"]).open("wb") as stderr:
+                process = start_owned(command, stdout=stdout, stderr=stderr,
+                                      env={**os.environ, "LC_ALL": "C", "LANG": "C"})
+                row.update(pid=process.pid, pgid=process.pid)
+                event("spotlight-indexing-command-begin", **row)
+                try:
+                    row["exit_code"] = process.wait(timeout=row["timeout_seconds"])
+                except subprocess.TimeoutExpired:
+                    row["timed_out"] = True
+                    stop_group(process, "spotlight-indexing-" + name, grace=1)
+                    row["exit_code"] = process.poll()
+            row["stdout_sha256"] = file_sha256(RESULTS / row["stdout_file"])
+            row["stderr_sha256"] = file_sha256(RESULTS / row["stderr_file"])
+        finally:
+            if process is not None and process.poll() is None:
+                stop_group(process, "spotlight-indexing-" + name, grace=1)
+            row["finished_utc"] = datetime.now(timezone.utc).isoformat()
+            event("spotlight-indexing-command-end", **row)
+        if row.get("timed_out") or row.get("exit_code") != 0:
+            raise ValueError("Native indexing setup command failed or exceeded the setup bound")
+        return (RESULTS / row["stdout_file"]).read_text(encoding="utf-8")
+
+    try:
+        if (os.environ.get("GITHUB_ACTIONS") != "true" or sys.platform != "darwin"
+                or os.environ.get("RUNNER_OS") != "macOS"
+                or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
+                or os.environ.get("GITHUB_JOB") != "duo-startup-diagnostic"
+                or os.environ.get("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
+                or os.environ.get("DUO_DIAGNOSTIC_DISABLE_SPOTLIGHT_INDEXING") != "true"):
+            raise ValueError("Indexing comparison is restricted to the opted-in ephemeral Duo CI job")
+        identity = {"repository": os.environ["GITHUB_REPOSITORY"],
+                    "run_id": os.environ.get("GITHUB_RUN_ID"),
+                    "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                    "source_sha": os.environ.get("GITHUB_SHA"),
+                    "job": os.environ["GITHUB_JOB"]}
+        if (not re.fullmatch(r"[1-9][0-9]*", identity["run_id"] or "")
+                or not re.fullmatch(r"[1-9][0-9]*", identity["run_attempt"] or "")
+                or not re.fullmatch(r"[0-9a-f]{40}", identity["source_sha"] or "")):
+            raise ValueError("Missing exact CI run/attempt/head identity")
+        handoff = json.loads((RESULTS / "duo-split-consumer.json").read_text(encoding="utf-8"))
+        if handoff.get("status") != "verified" or any(handoff["identity"].get(key) != identity[key]
+                for key in ("repository", "run_id", "run_attempt", "source_sha")):
+            raise ValueError("Indexing setup does not belong to the verified same-run immutable handoff")
+        workflow = Path(".github/workflows/release-uitest.yml")
+        if handoff["identity"].get("workflow_sha256") != file_sha256(workflow):
+            raise ValueError("Indexing setup workflow differs from the immutable handoff")
+        proof.update(identity=identity, workflow_sha256=file_sha256(workflow),
+                     handoff_sha256=file_sha256(RESULTS / "duo-split-consumer.json"))
+        volumes = proof["volumes"]
+        # APFS firmlinks can make Path.is_mount() false for the actual Data
+        # mount; use the native mount table instead of stat-device inference.
+        mounts = {}
+        for line in native(["/sbin/mount"], "mounts", 5).splitlines():
+            match = re.fullmatch(r"(\S+) on (/|/System/Volumes/Data) \(([^()]*)\)", line)
+            if match is None:
+                continue
+            device, volume, options_text = match.groups()
+            options = {value.strip() for value in options_text.split(",")}
+            if volume in mounts or not device.startswith("/dev/") or not {"apfs", "local"} <= options:
+                raise ValueError("Requested indexing volume is not a unique native local APFS mount")
+            mounts[volume] = {"device": device, "mountpoint": volume,
+                              "options": sorted(options), "native_line": line}
+        if set(mounts) != set(volumes):
+            raise ValueError("Native mount table omitted an exact requested indexing volume")
+        proof["mounts"] = mounts
+        proof["before"] = parse_spotlight_status(native(["/usr/bin/mdutil", "-s", *volumes], "before", 15), volumes)
+        native(["sudo", "-n", "/usr/bin/mdutil", "-i", "off", *volumes], "disable", 30)
+        proof["after"] = parse_spotlight_status(native(["/usr/bin/mdutil", "-s", *volumes], "after", 15), volumes)
+        if any(state != "disabled" for state in proof["after"].values()):
+            raise ValueError("Native readback did not confirm indexing disabled on both explicit volumes")
+        proof["status"] = "verified"
+    except Exception as error:
+        proof.update(error=str(error), error_type=type(error).__name__)
+        event("spotlight-indexing-failed", error=str(error), type=type(error).__name__)
+    finally:
+        proof["finished_utc"] = datetime.now(timezone.utc).isoformat()
+        atomic_json(output, proof)
+    event("spotlight-indexing-complete", status=proof["status"],
+          scope=proof["scope"], proof_sha256=file_sha256(output))
+    return 0 if proof["status"] == "verified" else 1
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--disable-spotlight-indexing"]:
+        sys.exit(disable_spotlight_indexing())
     if len(sys.argv) == 3 and sys.argv[1] == "--resource-observation":
         sys.exit(resource_observation(sys.argv[2]))
     if len(sys.argv) == 3 and sys.argv[1] == "--health":
