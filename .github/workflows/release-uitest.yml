@@ -1,4 +1,4 @@
-name: Mac Chrome Diagnosis
+name: Mac Button Style Diagnosis
 
 on:
   workflow_dispatch:
@@ -15,9 +15,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        idiom: [2, 6]
-        titlebar: [current, system]
-    name: Mac chrome (idiom ${{ matrix.idiom }}, ${{ matrix.titlebar }})
+        variant: [ashell-current, shell-current, ashell-exact, ashell-filled]
+    name: Mac button (${{ matrix.variant }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -34,8 +33,7 @@ jobs:
           xcodebuild -runFirstLaunch
       - name: Apply isolated comparison variant
         env:
-          MAC_DIAGNOSTIC_IDIOM: ${{ matrix.idiom }}
-          MAC_DIAGNOSTIC_TITLEBAR: ${{ matrix.titlebar }}
+          MAC_BUTTON_VARIANT: ${{ matrix.variant }}
         run: |
           python3 - <<'PYVARIANT'
           import os
@@ -43,20 +41,25 @@ jobs:
           from pathlib import Path
           info = Path('Example/ExampleAShellApp/Platforms/MacCatalyst/Info.plist')
           data = plistlib.loads(info.read_bytes())
-          data['UIDeviceFamily'] = [int(os.environ['MAC_DIAGNOSTIC_IDIOM'])]
+          data['UIDeviceFamily'] = [6]
           info.write_bytes(plistlib.dumps(data))
-          if os.environ['MAC_DIAGNOSTIC_TITLEBAR'] == 'system':
-              source = Path('Platforms/MacCatalyst/AShellView.cs')
-              text = source.read_text()
-              marker = '        public override void ViewWillAppear(bool animated)'
-              assert text.count(marker) == 1
-              source.write_text(text.split(marker)[0] + '    }\n}\n')
+          variant = os.environ['MAC_BUTTON_VARIANT']
+          constants = {
+              'ashell-current': '',
+              'shell-current': 'MAC_BUTTON_OFFICIAL_SHELL',
+              'ashell-exact': 'MAC_BUTTON_EXACT_BACKGROUND',
+              'ashell-filled': 'MAC_BUTTON_FILLED',
+          }
+          project = Path('Example/ExampleAShellApp/ExampleAShellApp.csproj')
+          text = project.read_text()
+          text = text.replace('<UseMaui>true</UseMaui>', '<UseMaui>true</UseMaui>\n<DefineConstants>$(DefineConstants);' + constants[variant] + '</DefineConstants>')
+          project.write_text(text)
           PYVARIANT
           sw_vers > environment.txt
           xcodebuild -version >> environment.txt
           xcrun --sdk macosx --show-sdk-version >> environment.txt
           dotnet --version >> environment.txt
-          git diff -- Platforms/MacCatalyst/AShellView.cs Example/ExampleAShellApp/Platforms/MacCatalyst/Info.plist > variant.diff
+          git diff > variant.diff
       - name: Install MAUI workloads
         run: dotnet workload install maui-maccatalyst --from-rollback-file workloads.rollback.json
       - name: Install Appium
@@ -79,17 +82,29 @@ jobs:
       - name: Run UI tests
         run: |
           until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
-          UITEST_PLATFORM=maccatalyst UITEST_APP_PATH="/Applications/ExampleAShellApp.app" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+          UITEST_PLATFORM=maccatalyst UITEST_APP_PATH="/Applications/ExampleAShellApp.app" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --filter FullyQualifiedName~MacButtonStyleTests --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+      - name: Collect native button diagnostics
+        if: always()
+        run: |
+          mkdir -p TestResults
+          for cache in "$HOME/Library/Containers/com.companyname.exampleashellapp/Data/Library/Caches" "$HOME/Library/Caches/com.companyname.exampleashellapp" "$HOME/Library/Caches"; do
+            if [ -d "$cache" ]; then
+              if [ -f "$cache/ashell-button-style.jsonl" ]; then
+                cp "$cache/ashell-button-style.jsonl" TestResults/
+              fi
+            fi
+          done
       - name: Upload shots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mac-chrome-idiom${{ matrix.idiom }}-${{ matrix.titlebar }}
+          name: mac-button-${{ matrix.variant }}
           path: |
             TestResults/shots
             TestResults/screenshots
             TestResults/*.trx
             TestResults/*.xml
+            TestResults/*.jsonl
             environment.txt
             variant.diff
             app-info.plist

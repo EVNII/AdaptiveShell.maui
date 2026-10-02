@@ -19,7 +19,8 @@ public class SessionHost
     {
         Driver = AppiumSetup.CreateDriver();
 
-        // 等壳的首个导航项出现,说明首屏已渲染。
+        // Mac 对照包含官方 Shell;用页面按钮判断首屏就绪,不依赖 AShell 导航项。
+        var readyId = AppiumSetup.Platform == "maccatalyst" ? "counterBtn" : "home";
         // 资源紧张的模拟器上系统弹窗(如启动器 ANR "isn't responding")会挡住
         // 无障碍树,等待过程里由 WaitFor 轮询顺带点掉(见 ElementExtensions)
         for (int attempt = 0; attempt < 6; attempt++)
@@ -27,7 +28,7 @@ public class SessionHost
             ElementExtensions.DismissAnrDialogs(Driver);
             try
             {
-                Driver.WaitForAccessibilityId("home", 30);
+                Driver.WaitForAccessibilityId(readyId, 30);
                 Shots.Save(Driver, "launch", 1);
                 File.WriteAllText(Path.Combine(AppiumSetup.RepoRoot, "TestResults", "window-launch.xml"), Driver.PageSource);
                 return;
@@ -37,7 +38,7 @@ public class SessionHost
             }
         }
 
-        Driver.WaitForAccessibilityId("home");
+        Driver.WaitForAccessibilityId(readyId);
         Shots.Save(Driver, "launch", 1);
     }
 

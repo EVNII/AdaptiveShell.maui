@@ -1,4 +1,4 @@
-﻿namespace ExampleAShellApp
+namespace ExampleAShellApp
 {
     public partial class MainPage : ContentPage
     {
@@ -7,6 +7,9 @@
         public MainPage()
         {
             InitializeComponent();
+#if MACCATALYST
+            MacButtonStyleDiagnostics.Attach(CounterBtn);
+#endif
 
         }
 
