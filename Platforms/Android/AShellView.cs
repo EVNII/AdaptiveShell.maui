@@ -6,6 +6,7 @@ using ColorStateList = Android.Content.Res.ColorStateList;
 using Android.Views;
 using Android.Views.Animations;
 using Android.Widget;
+using AndroidX.Core.Graphics;
 using AndroidX.Core.View;
 using Google.Android.Material.AppBar;
 using Google.Android.Material.BottomNavigation;
@@ -14,6 +15,7 @@ using Google.Android.Material.NavigationRail;
 using Microsoft.Maui.Platform;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using ImageButton = Android.Widget.ImageButton;
 
 namespace AdaptiveShell.Platforms.Android
@@ -131,6 +133,9 @@ namespace AdaptiveShell.Platforms.Android
             _overlayLayout.AddView(_linearLayout);
             _overlayLayout.AddView(_drawerScrim);
             _overlayLayout.AddView(_drawerPanel);
+            _overlayLayout.ViewAttachedToWindow += OnRootAttachedToWindow;
+            _overlayLayout.ViewDetachedFromWindow += OnRootDetachedFromWindow;
+            _virtualView.PropertyChanged += OnRootBackgroundChanged;
 
             // 安全区各自处理:内容列顶出状态栏;底栏模式的导航栏避开手势区;
             // 抽屉内容顶/底部避让。rail 内部已自行 inset,无需处理
@@ -164,6 +169,93 @@ namespace AdaptiveShell.Platforms.Android
         ConfigurationChangedListener? _configListener;
 
         bool _disposed;
+
+        bool? _previousLightStatusBars;
+        bool _lastLightStatusBars;
+
+        private void OnRootAttachedToWindow(object? sender,
+            global::Android.Views.View.ViewAttachedToWindowEventArgs e)
+        {
+            // WindowHandler initializes system bars before content is attached. Posting also
+            // lets MAUI finish mapping the Page background used behind the top inset.
+            _overlayLayout.Post(UpdateStatusBarAppearance);
+        }
+
+        private void OnRootDetachedFromWindow(object? sender,
+            global::Android.Views.View.ViewDetachedFromWindowEventArgs e) =>
+            RestoreStatusBarAppearance();
+
+        private void OnRootBackgroundChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(AShell.BackgroundColor)
+                || e.PropertyName == nameof(AShell.Background))
+            {
+                _overlayLayout.Post(UpdateStatusBarAppearance);
+            }
+        }
+
+        private void UpdateStatusBarAppearance()
+        {
+            if (_disposed || !_overlayLayout.IsAttachedToWindow
+                || !OperatingSystem.IsAndroidVersionAtLeast(23)
+                || _activity?.Window is not { } window)
+            {
+                return;
+            }
+
+            // Target 35+ is edge-to-edge unless its actual window theme opts out.
+            // Android 16 / target 36 also disables that opt-out. Earlier transparent
+            // windows are supported without changing legacy opaque purple bars.
+            int targetSdk = (int)(_context.ApplicationInfo?.TargetSdkVersion ?? 0);
+            bool forcedTransparent = OperatingSystem.IsAndroidVersionAtLeast(36) && targetSdk >= 36;
+#pragma warning disable CA1422 // The opt-out still applies on Android 15 / target 35.
+            if (!forcedTransparent && OperatingSystem.IsAndroidVersionAtLeast(35) && targetSdk >= 35)
+            {
+                using var windowStyle = _activity.ObtainStyledAttributes(
+                    new[] { global::Android.Resource.Attribute.WindowOptOutEdgeToEdgeEnforcement });
+                forcedTransparent = !windowStyle.GetBoolean(0, false);
+            }
+#pragma warning restore CA1422
+#pragma warning disable CA1422 // Reading the legacy color is needed only when it is still honored.
+            bool transparent = forcedTransparent || ((uint)window.StatusBarColor >> 24) == 0;
+#pragma warning restore CA1422
+            if (!transparent
+                || _overlayLayout.Background is not global::Android.Graphics.Drawables.ColorDrawable background
+                || background.Color.A != 255)
+            {
+                // A gradient or translucent root has no single known status-area color.
+                RestoreStatusBarAppearance();
+                return;
+            }
+
+            if (WindowCompat.GetInsetsController(window, window.DecorView) is not { } controller)
+            {
+                return;
+            }
+            bool lightBackground = ColorUtils.CalculateLuminance(background.Color.ToArgb()) > 0.5;
+            if (_previousLightStatusBars is null && controller.AppearanceLightStatusBars == lightBackground)
+            {
+                return;
+            }
+
+            _previousLightStatusBars ??= controller.AppearanceLightStatusBars;
+            controller.AppearanceLightStatusBars = lightBackground;
+            _lastLightStatusBars = lightBackground;
+        }
+
+        private void RestoreStatusBarAppearance()
+        {
+            if (_previousLightStatusBars is bool previous && _activity?.Window is { } window)
+            {
+                var controller = WindowCompat.GetInsetsController(window, window.DecorView);
+                // Do not overwrite a later appearance change made by the host or another page.
+                if (controller is not null && controller.AppearanceLightStatusBars == _lastLightStatusBars)
+                {
+                    controller.AppearanceLightStatusBars = previous;
+                }
+            }
+            _previousLightStatusBars = null;
+        }
 
         private static AndroidX.Activity.ComponentActivity? FindActivity(Context context)
         {
@@ -753,7 +845,11 @@ namespace AdaptiveShell.Platforms.Android
             return new ContentPage
             {
                 Title = group.Title,
-                Content = new Microsoft.Maui.Controls.ScrollView { Content = layout },
+                Content = new Microsoft.Maui.Controls.ScrollView
+                {
+                    AutomationId = $"landing-{group.AutomationId ?? group.Title}-body",
+                    Content = layout,
+                },
             };
         }
 
@@ -767,23 +863,30 @@ namespace AdaptiveShell.Platforms.Android
                 AutomationId = $"landing-{child.AutomationId ?? child.Title}",
             };
 
+            var title = new Label
+            {
+                AutomationId = $"{row.AutomationId}-title",
+                Text = child.Title,
+                FontSize = 17,
+                VerticalOptions = LayoutOptions.Center,
+            };
+
             if (child.Icon is not null)
             {
-                row.Add(new Image
+                var icon = new Image
                 {
+                    AutomationId = $"{row.AutomationId}-icon",
                     Source = child.Icon,
                     WidthRequest = 24,
                     HeightRequest = 24,
                     VerticalOptions = LayoutOptions.Center,
-                });
+                };
+                AutomationProperties.SetIsInAccessibleTree(icon, true);
+                icon.Behaviors.Add(new DefaultLandingIconTint(title));
+                row.Add(icon);
             }
 
-            row.Add(new Label
-            {
-                Text = child.Title,
-                FontSize = 17,
-                VerticalOptions = LayoutOptions.Center,
-            });
+            row.Add(title);
 
             var tap = new TapGestureRecognizer();
             tap.Tapped += (_, _) =>
@@ -833,6 +936,10 @@ namespace AdaptiveShell.Platforms.Android
             }
 
             _disposed = true;
+            _virtualView.PropertyChanged -= OnRootBackgroundChanged;
+            _overlayLayout.ViewAttachedToWindow -= OnRootAttachedToWindow;
+            _overlayLayout.ViewDetachedFromWindow -= OnRootDetachedFromWindow;
+            RestoreStatusBarAppearance();
             if (_configListener is not null)
             {
                 _activity?.RemoveOnConfigurationChangedListener(_configListener);
@@ -985,6 +1092,7 @@ namespace AdaptiveShell.Platforms.Android
                 new global::Android.Graphics.Color(
                     ResolveThemeColor(_context, (onSurface & 0x00ffffff) | 0x1f000000,
                         "colorControlHighlight")));
+            UpdateStatusBarAppearance();
         }
 
         private int ResolveOnSurfaceColor() =>

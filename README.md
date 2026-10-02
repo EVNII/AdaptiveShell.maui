@@ -90,6 +90,10 @@ Configuration via environment variables: `UITEST_PLATFORM`, `UITEST_FORM` (`comp
 
 `DarkModeTests` additionally switches the system appearance (adb `uimode`, `simctl ui appearance`, Windows registry theme) and verifies the shell stays functional in dark mode; screenshots from both themes land in the report.
 
+Android theme tests also require Python 3 to verify status-bar foreground contrast from three original screenshots and native `mobile:getSystemBars` frames. Missing evidence or invisible status-bar foreground fails the theme test.
+
+`LandingPageDarkModeTests` keeps the group landing page open through light, dark, and restored light appearance. On Android compact and iOS compact/Duo it checks the page background, both SVG icons and titles from original screenshots and native accessibility bounds, then opens both children, clicks their counters, and returns using the native Back affordance. Python 3 is required; missing captures or invisible icons fail the test and report. Sidebar, drawer, and direct-leaf layouts have no dedicated landing page and explicitly skip this test.
+
 CI (`.github/workflows/uitest.yml`) runs Android (phone + tablet emulator matrix), iOS and Windows on every push/PR; Mac Catalyst runs locally only.
 
 ## Release & quality gate

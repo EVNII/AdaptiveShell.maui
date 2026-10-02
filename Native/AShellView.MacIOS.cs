@@ -244,7 +244,11 @@ namespace AdaptiveShell.Platforms.MacIOS
                 page = new ContentPage
                 {
                     Title = group.Title,
-                    Content = new ScrollView { Content = layout },
+                    Content = new ScrollView
+                    {
+                        AutomationId = $"landing-{group.AutomationId ?? group.Title}-body",
+                        Content = layout,
+                    },
                 };
             }
 
@@ -264,23 +268,30 @@ namespace AdaptiveShell.Platforms.MacIOS
                 AutomationId = $"landing-{child.AutomationId ?? child.Title}",
             };
 
+            var title = new Label
+            {
+                AutomationId = $"{row.AutomationId}-title",
+                Text = child.Title,
+                FontSize = 17,
+                VerticalOptions = LayoutOptions.Center,
+            };
+
             if (child.Icon is not null)
             {
-                row.Add(new Image
+                var icon = new Image
                 {
+                    AutomationId = $"{row.AutomationId}-icon",
                     Source = child.Icon,
                     WidthRequest = 24,
                     HeightRequest = 24,
                     VerticalOptions = LayoutOptions.Center,
-                });
+                };
+                AutomationProperties.SetIsInAccessibleTree(icon, true);
+                icon.Behaviors.Add(new DefaultLandingIconTint(title));
+                row.Add(icon);
             }
 
-            row.Add(new Label
-            {
-                Text = child.Title,
-                FontSize = 17,
-                VerticalOptions = LayoutOptions.Center,
-            });
+            row.Add(title);
 
             var tap = new TapGestureRecognizer();
             tap.Tapped += (_, _) =>

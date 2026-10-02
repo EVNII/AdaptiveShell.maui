@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text;
 using System.Xml.Linq;
 using System.Globalization;
+using System.Diagnostics;
 
 namespace AdaptiveShell.UITests;
 
@@ -120,6 +121,11 @@ public class DarkModeTests : BaseTest
             AssertGroupChildState(counterText);
             CaptureThemeStage("light-restored", 32, "light-group-child-restored");
 
+            if (AppiumSetup.Platform == "android")
+            {
+                VerifyAndroidSystemBars();
+            }
+
             if (isIosWide)
             {
                 // iPad 选择 Home2 会自动收起侧栏,因此在 Music 主题状态验证之后执行。
@@ -206,6 +212,34 @@ public class DarkModeTests : BaseTest
 
     void CaptureThemeStage(string stage, int sequence, string ordinaryLabel)
     {
+        if (AppiumSetup.Platform == "android")
+        {
+            var androidResults = Path.Combine(AppiumSetup.RepoRoot, "TestResults");
+            Directory.CreateDirectory(androidResults);
+            // mobile:getSystemBars returns native dumpsys window frames, not the
+            // older /system_bars response containing only a status-bar height.
+            var systemBarsBefore = Driver.ExecuteScript("mobile: getSystemBars");
+            var deviceInfo = Driver.ExecuteScript("mobile: deviceInfo");
+            var screenSize = Driver.Manage().Window.Size;
+            Shot(ordinaryLabel);
+            // Required capture: an ordinary Shot can swallow screenshot failures.
+            Shots.Save(Driver, $"theme-{stage}", sequence);
+            var systemBarsAfter = Driver.ExecuteScript("mobile: getSystemBars");
+            var androidEvidence = new
+            {
+                schemaVersion = 1,
+                stage,
+                png = $"shots/android-{AppiumSetup.Form ?? "default"}/{sequence:00}-theme-{stage}.png",
+                coordinateSource = "mobile:getSystemBars",
+                systemBarsBefore,
+                systemBarsAfter,
+                deviceInfo,
+                screenSize = new { width = screenSize.Width, height = screenSize.Height },
+            };
+            File.WriteAllText(Path.Combine(androidResults, $"android-system-bars-{stage}.json"),
+                JsonSerializer.Serialize(androidEvidence, new JsonSerializerOptions { WriteIndented = true }));
+            return;
+        }
         if (AppiumSetup.Platform == "ios" && AppiumSetup.Form == "duo")
         {
             var duoResults = Path.Combine(AppiumSetup.RepoRoot, "TestResults");
@@ -270,6 +304,69 @@ public class DarkModeTests : BaseTest
         double Value(string name) => double.Parse(window.Attribute(name)?.Value
             ?? throw new InvalidOperationException($"Window source is missing {name}."), CultureInfo.InvariantCulture);
         return new { x = Value("x"), y = Value("y"), width = Value("width"), height = Value("height") };
+    }
+
+    void VerifyAndroidSystemBars()
+    {
+        var results = Path.Combine(AppiumSetup.RepoRoot, "TestResults");
+        var evidencePath = Path.Combine(results, "android-system-bars-checks.json");
+        var script = Path.Combine(AppiumSetup.RepoRoot, "Tests", "AdaptiveShell.UITests",
+            "Scripts", "verify_android_system_bars.py");
+        var startInfo = new ProcessStartInfo("python3")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        startInfo.ArgumentList.Add(script);
+        startInfo.ArgumentList.Add(results);
+        startInfo.ArgumentList.Add("--strict");
+        var deadline = Stopwatch.StartNew();
+        using var process = new Process { StartInfo = startInfo };
+        var started = false;
+        try
+        {
+            started = process.Start();
+            if (!started)
+                throw new InvalidOperationException("Could not start the Android system-bar verifier.");
+            // Reserve two seconds of the total 60-second budget for owned-child cleanup.
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(
+                Math.Max(1, 58000 - deadline.ElapsedMilliseconds)));
+            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+            Task.WhenAll(process.WaitForExitAsync(timeout.Token), stdout, stderr)
+                .GetAwaiter().GetResult();
+            var output = stdout.GetAwaiter().GetResult();
+            var error = stderr.GetAwaiter().GetResult();
+            File.WriteAllText(evidencePath, output);
+            TestContext.Out.WriteLine(output);
+            if (!string.IsNullOrWhiteSpace(error))
+                TestContext.Out.WriteLine(error);
+            Assert.That(process.ExitCode, Is.EqualTo(0),
+                $"Android status-bar foreground must remain visible in all three themes. {error}");
+        }
+        catch (Exception ex) when (ex is not AssertionException)
+        {
+            File.WriteAllText(evidencePath, JsonSerializer.Serialize(new
+            {
+                verificationError = ex is OperationCanceledException
+                    ? "Android system-bar verification exceeded the 60-second total deadline."
+                    : $"Android system-bar verification failed (python3 is required): {ex.Message}",
+            }, new JsonSerializerOptions { WriteIndented = true }));
+            Assert.Fail($"Android system-bar verifier did not complete: {ex.Message}");
+        }
+        finally
+        {
+            if (started && !process.HasExited)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit((int)Math.Max(0, 60000 - deadline.ElapsedMilliseconds));
+                }
+                catch (InvalidOperationException) { /* The owned child already exited. */ }
+            }
+        }
     }
 
     // 当前页面(无论 home 还是组子页)都有 counterBtn,适合当探针
