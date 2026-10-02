@@ -1,4 +1,4 @@
-name: Duo complete suite split-build preboot TestHost diagnostic
+name: Duo complete suite preboot TestHost native preinstall diagnostic
 
 # TEMP candidate only. Base application/tests/verifier must be public6200c2bf.
 # Publish only on a separate diagnostic branch after review; never replaces full31.
@@ -183,7 +183,7 @@ jobs:
             TestResults/duo-*
             appium.log
           if-no-files-found: warn
-      - name: Run one complete12 TestHost before exact Duo boot (no build or restore)
+      - name: Run complete12 with exact native preinstall before TestHost release
         timeout-minutes: 25
         env:
           UITEST_PLATFORM: ios
@@ -192,6 +192,7 @@ jobs:
           UITEST_DEVICE_UDID: ${{ env.DUO_DEVICE_UDID }}
           UITEST_APP_PATH: ${{ github.workspace }}/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app
           DUO_DIAGNOSTIC_PREBOOT_HOST: 'true'
+          DUO_DIAGNOSTIC_PREINSTALL_AUT: 'true'
         run: python3 "$RUNNER_TEMP/duo-startup-probe.py"
       - name: Verify the original strict raw four-phase evidence without fallback
         timeout-minutes: 2

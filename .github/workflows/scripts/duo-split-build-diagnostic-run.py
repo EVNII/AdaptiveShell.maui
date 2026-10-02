@@ -8,6 +8,7 @@ Test/capture commands own process groups; the watchdog kills their descendants.
 from datetime import datetime, timezone
 import json
 import os
+import plistlib
 from pathlib import Path
 import signal
 import hashlib
@@ -635,6 +636,144 @@ def boot_after_testhost(marker, deadline):
     return proof
 
 
+def preinstall_verified_aut(marker, deadline):
+    """Optional native setup only; original Appium reset/query/install stays intact."""
+    if (os.environ.get("DUO_DIAGNOSTIC_PREINSTALL_AUT") != "true"
+            or os.environ.get("GITHUB_ACTIONS") != "true"
+            or os.environ.get("RUNNER_OS") != "macOS"
+            or os.environ.get("GITHUB_JOB") != "duo-startup-diagnostic"):
+        raise ValueError("Native preinstall requires explicit opt-in in this diagnostic CI job")
+    path = RESULTS / "duo-aut-preinstall-proof.json"
+    if path.exists():
+        raise ValueError("Native preinstall proof already exists; refusing reuse")
+    stage_deadline = min(deadline, time.monotonic() + 120)
+    proof = {"status": "pending", "started_utc": datetime.now(timezone.utc).isoformat(),
+             "identity": {key: marker[key] for key in
+                          ("run_id", "run_attempt", "head_sha", "device_udid", "nonce", "testhost_pid", "assembly_sha256")},
+             "budget_seconds": 120, "commands": [],
+             "scope": "native setup evidence; original Appium installed query/reset/reinstall is unchanged"}
+
+    def budget():
+        remaining(deadline)
+        value = stage_deadline - time.monotonic()
+        if value <= 0:
+            raise TimeoutError("Native AUT preinstall/identity proof exceeded its shared-clock120s stage limit")
+        return value
+
+    def native(command, name):
+        seconds = budget()
+        row = {"command": command, "started_utc": datetime.now(timezone.utc).isoformat(),
+               "timeout_seconds": seconds, "stdout_file": name + ".stdout.txt", "stderr_file": name + ".stderr.txt"}
+        proof["commands"].append(row)
+        process = None
+        code = 1
+        event("aut-preinstall-command-begin", **row)
+        try:
+            with (RESULTS / row["stdout_file"]).open("wb") as output, (RESULTS / row["stderr_file"]).open("wb") as error:
+                process = start_owned(command, stdout=output, stderr=error)
+                row.update(pid=process.pid, owned_pgid=process.pid)
+                try:
+                    code = process.wait(timeout=seconds)
+                except subprocess.TimeoutExpired:
+                    code = 124
+        finally:
+            if process is not None:
+                stop_group(process, name, grace=1 if code == 124 else 0)
+            row.update(exit_code=code, finished_utc=datetime.now(timezone.utc).isoformat())
+            event("aut-preinstall-command-end", **row)
+        budget()
+        if code != 0:
+            raise RuntimeError(f"Native AUT setup failed: {name}, exit {code}")
+        return (RESULTS / row["stdout_file"]).read_text(encoding="utf-8").strip()
+
+    def bundle_info(app):
+        info_path = app / "Info.plist"
+        if info_path.is_symlink() or not info_path.is_file():
+            raise ValueError("AUT Info.plist is not a regular file")
+        with info_path.open("rb") as stream:
+            info = plistlib.load(stream)
+        expected = {"CFBundleIdentifier": "com.companyname.exampleashellapp",
+                    "CFBundleExecutable": "ExampleAShellApp", "DTSDKName": "iphonesimulator27.1", "DTSDKBuild": "24A94403"}
+        if any(info.get(key) != value for key, value in expected.items()):
+            raise ValueError("Actual AUT bundle/executable/SDK27.1 build identity differs")
+        executable = app / expected["CFBundleExecutable"]
+        if executable.is_symlink() or not executable.is_file():
+            raise ValueError("AUT executable is not a regular file")
+        return {**expected, "app_path": str(app), "info_plist_sha256": file_sha256(info_path),
+                "executable_sha256": file_sha256(executable), "executable_bytes": executable.stat().st_size}
+
+    try:
+        budget()
+        handoff = json.loads((RESULTS / "duo-split-consumer.json").read_text(encoding="utf-8"))
+        manifest_path = RESULTS / "duo-split-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        identity = handoff.get("identity", {})
+        if (handoff.get("status") != "verified" or file_sha256(manifest_path) != handoff.get("manifest_sha256")
+                or manifest.get("identity") != identity or manifest.get("test_count") != 12
+                or any(identity.get(key) != marker[value] for key, value in
+                       (("run_id", "run_id"), ("run_attempt", "run_attempt"), ("source_sha", "head_sha")))
+                or handoff.get("test_assembly_sha256") != marker["assembly_sha256"]):
+            raise ValueError("Native preinstall lacks the same immutable source/run/test handoff")
+        workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+        app = Path(handoff["paths"]["app"])
+        if (identity.get("workspace") != str(workspace) or app != workspace / manifest["app_path"]
+                or app != Path(os.environ["UITEST_APP_PATH"]) or app.resolve() != app
+                or not app.is_dir() or app.is_symlink()):
+            raise ValueError("Native install input differs from the exact restored AUT path")
+        prefix = "workspace/" + manifest["app_path"]
+        rows = [row for row in manifest["entries"] if row["path"] == prefix or row["path"].startswith(prefix + "/")]
+        transfer = runpy.run_path(".github/workflows/scripts/duo-split-build-transfer.py")
+        transfer["verify_installed_tree"](app, rows, prefix)
+        source = bundle_info(app)
+        boot_path = RESULTS / "duo-testhost-boot-proof.json"
+        boot = json.loads(boot_path.read_text(encoding="utf-8"))
+        native_path = RESULTS / "duo-testhost-native-after-boot.json"
+        observed = json.loads(native_path.read_text(encoding="utf-8"))
+        udid = marker["device_udid"]
+        devices = [device for group in observed["devices"].values() for device in group if device.get("udid") == udid]
+        if (boot.get("status") != "verified" or boot.get("device_udid") != udid
+                or udid != os.environ.get("DUO_DEVICE_UDID") or boot.get("runtime_version") != "27.1"
+                or boot.get("runtime_build") != "24A94401" or boot.get("sdk_version") != "27.1"
+                or boot.get("dual_displays_verified") is not True or boot.get("bootstatus_exit_code") != 0
+                or boot.get("native_environment_sha256") != file_sha256(native_path)
+                or len(devices) != 1 or devices[0].get("state") != "Booted" or devices[0].get("isAvailable") is not True):
+            raise ValueError("Native preinstall lacks the same exact successful Duo boot proof")
+        data_path = Path(devices[0]["dataPath"])
+        if not data_path.is_absolute() or not data_path.is_dir():
+            raise ValueError("Native exact device dataPath is absent")
+        proof.update(source=source, manifest_sha256=file_sha256(manifest_path), artifact=handoff["artifact"],
+                     boot_proof_sha256=file_sha256(boot_path), native_device_data_path=str(data_path))
+        native(["xcrun", "simctl", "install", udid, str(app)], "duo-aut-preinstall-install")
+        returned = native(["xcrun", "simctl", "get_app_container", udid, source["CFBundleIdentifier"], "app"],
+                          "duo-aut-preinstall-container")
+        installed = Path(returned)
+        if (len(returned.splitlines()) != 1 or not installed.is_absolute() or installed.suffix != ".app"
+                or not installed.is_dir() or installed.is_symlink() or installed.resolve() == app
+                or not installed.resolve().is_relative_to(data_path.resolve())):
+            raise ValueError("Native installed container is not one distinct app under the exact device dataPath")
+        actual = bundle_info(installed)
+        proof["installed"] = actual
+        if actual["executable_sha256"] != source["executable_sha256"]:
+            raise ValueError("Installed executable bytes differ from the immutable producer AUT")
+        # Installer signature rewriting is not assumed away: reject any source
+        # mutation or installed-executable difference, preserving raw evidence.
+        transfer["verify_installed_tree"](app, rows, prefix)
+        if bundle_info(app) != source:
+            raise ValueError("Immutable source AUT changed during native installation")
+        budget()
+        proof.update(status="verified", installed=actual, finished_utc=datetime.now(timezone.utc).isoformat(),
+                     stage_remaining_seconds=budget(), total_remaining_seconds=remaining(deadline))
+        atomic_json(path, proof)
+        event("aut-preinstall-verified", proof_sha256=file_sha256(path), **proof)
+        return file_sha256(path)
+    except Exception as error:
+        proof.update(status="failed", finished_utc=datetime.now(timezone.utc).isoformat(),
+                     error={"type": type(error).__name__, "message": str(error)})
+        if not path.exists():
+            atomic_json(path, proof)
+        raise
+
+
 def main():
     RESULTS.mkdir(parents=True, exist_ok=True)
     test = None
@@ -651,7 +790,7 @@ def main():
             phase = "complete-suite-testhost-preboot"
             if os.environ.get("DUO_DIAGNOSTIC_PREBOOT_HOST") != "true":
                 raise ValueError("This diagnostic requires explicit preboot TestHost opt-in")
-            for name in ("duo-testhost-arrived.json", "duo-testhost-release.json", "duo-testhost-boot-proof.json"):
+            for name in ("duo-testhost-arrived.json", "duo-testhost-release.json", "duo-testhost-boot-proof.json", "duo-aut-preinstall-proof.json"):
                 if (RESULTS / name).exists():
                     raise ValueError("Diagnostic barrier files already exist; refusing a second test process")
             handoff = json.loads((RESULTS / "duo-split-consumer.json").read_text(encoding="utf-8"))
@@ -681,11 +820,17 @@ def main():
                 marker = wait_for_testhost(test, identity, deadline)
                 phase = "exact-duo-boot-after-testhost"
                 boot_after_testhost(marker, deadline)
+                preinstall_sha = None
+                if os.environ.get("DUO_DIAGNOSTIC_PREINSTALL_AUT") == "true":
+                    phase = "native-aut-preinstall-before-testhost-release"
+                    preinstall_sha = preinstall_verified_aut(marker, deadline)
                 if test.poll() is not None or os.getpgid(marker["testhost_pid"]) != test.pid:
                     raise RuntimeError("Actual waiting TestHost exited before boot release")
                 release = {key: marker[key] for key in
                            ("run_id", "run_attempt", "head_sha", "device_udid", "nonce", "testhost_pid", "assembly_sha256")}
                 release.update(status="boot-verified", boot_proof_sha256=file_sha256(RESULTS / "duo-testhost-boot-proof.json"))
+                if preinstall_sha is not None:
+                    release["preinstall_proof_sha256"] = preinstall_sha
                 remaining(deadline)
                 atomic_json(RESULTS / "duo-testhost-release.json", release)
                 phase = "complete-suite-after-native-boot-release"
