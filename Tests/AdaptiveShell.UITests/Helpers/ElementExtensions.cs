@@ -32,7 +32,10 @@ public static class ElementExtensions
     static AppiumElement WaitForAny(AppiumDriver driver, int timeoutSeconds, params By[] locators)
     {
         var wait = new WebDriverWait(driver, TimeSpan.FromSeconds(timeoutSeconds));
-        wait.IgnoreExceptionTypes(typeof(NoSuchElementException), typeof(NotFoundException));
+        // The native tree can replace a node between lookup and Displayed.
+        // Re-run the locators within the original deadline when that happens.
+        wait.IgnoreExceptionTypes(typeof(NoSuchElementException), typeof(NotFoundException),
+            typeof(StaleElementReferenceException));
         return (AppiumElement)wait.Until(d =>
         {
             // 系统 ANR 弹窗(如启动器 "isn't responding")会挡住无障碍树,
