@@ -21,7 +21,7 @@ JOB_LABELS = {
 }
 
 
-def cell_result(artifact_dir: Path) -> dict:
+def trx_result(artifact_dir: Path) -> dict:
     """只用本 cell 的 TRX 报告结果,不把矩阵汇总状态当成单个 cell 的结果。"""
     unknown = {"result": "unknown", "passed": None, "failed": None, "skipped": None}
     trxs = sorted(artifact_dir.rglob("*.trx"))
@@ -80,6 +80,44 @@ def cell_result(artifact_dir: Path) -> dict:
         return {**unknown, "detail": f"TRX 无效: {error}"}
 
 
+def cell_result(artifact_dir: Path, job_result: str | None = None) -> dict:
+    report = trx_result(artifact_dir)
+    if artifact_dir.name != "shots-maccatalyst":
+        return report
+
+    # Mac 外观检查在 dotnet test 之后运行，不能仅凭成功的 TRX 显示绿灯。
+    checks = sorted(artifact_dir.rglob("button-colors.json"))
+    try:
+        if len(checks) != 1:
+            raise ValueError("缺少或存在多个按钮颜色核对结果")
+        colors = json.loads(checks[0].read_text(encoding="utf-8"))
+        summary = colors["summary"]
+        expected = {"analyses": 6, "matches": 6, "mismatches": 0, "errors": 0}
+        if any(type(summary[key]) is not int for key in expected):
+            raise ValueError("按钮颜色核对计数无效")
+        if any(summary[key] != value for key, value in expected.items()):
+            raise ValueError(
+                f"按钮颜色核对未通过：匹配 {summary['matches']}/6，"
+                f"颜色不符 {summary['mismatches']}，证据错误 {summary['errors']}")
+        results = colors["results"]
+        phases = {(stage, clicked) for stage in ("light", "dark", "light-restored")
+                  for clicked in (False, True)}
+        if (len(results) != 6 or colors["errors"]
+                or any(result["color_status"] != "match" for result in results)
+                or {(result["stage"], result["after_click"]) for result in results} != phases):
+            raise ValueError("按钮颜色核对缺少完整的浅色、深色、恢复浅色点击前后证据")
+        report["appearance_detail"] = "按钮颜色：6/6 通过（浅色、深色、恢复浅色，点击前后）"
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        report["result"] = "failure"
+        report["appearance_detail"] = f"按钮颜色：未通过；{error}"
+
+    if job_result is not None and job_result != "success":
+        report["result"] = "failure"
+        previous = report["detail"]
+        report["detail"] = (previous + "；" if previous else "") + f"Mac E2E job 为 {job_result}，完整门禁未通过"
+    return report
+
+
 def main() -> None:
     root = Path(sys.argv[1])
     shots_root = root / "shots"
@@ -94,7 +132,8 @@ def main() -> None:
             if not artifact_dir.is_dir():
                 continue
             pngs = sorted(artifact_dir.rglob("*.png"))
-            cells[artifact_dir.name] = (pngs, cell_result(artifact_dir))
+            mac_job = needs.get("uitest-maccatalyst", {}).get("result")
+            cells[artifact_dir.name] = (pngs, cell_result(artifact_dir, mac_job))
 
     md = ["# AdaptiveShell E2E 报告", "",
           f"- 运行: {run_url}", f"- commit: `{sha}`", "", "## Job 状态", ""]
@@ -114,7 +153,13 @@ def main() -> None:
         ".bad{color:#c00}.ok{color:#080}.unknown{color:#666}</style>",
         f"<h1>AdaptiveShell E2E 报告 <small>{sha}</small></h1>",
         f"<p><a href='{run_url}'>workflow run</a></p>",
+        "<h2>Job 状态</h2><table><thead><tr><th>Job</th><th>结果</th></tr></thead><tbody>",
     ]
+    for key, label in JOB_LABELS.items():
+        result = needs.get(key, {}).get("result", "unknown")
+        cls = "ok" if result == "success" else "bad" if result in ("failure", "cancelled") else "unknown"
+        html_parts.append(f"<tr><td>{html.escape(label)}</td><td class='{cls}'>{html.escape(result)}</td></tr>")
+    html_parts.append("</tbody></table>")
 
     for cell, (pngs, report) in cells.items():
         result = report["result"]
@@ -132,6 +177,9 @@ def main() -> None:
             detail = html.escape(report["detail"])
             md.extend([detail, ""])
             html_parts.append(f"<p>{detail}</p>")
+        if report.get("appearance_detail"):
+            md.extend([report["appearance_detail"], ""])
+            html_parts.append(f"<p>{html.escape(report['appearance_detail'])}</p>")
         for png in pngs:
             rel = png.relative_to(root).as_posix()
             label = html.escape(png.stem)

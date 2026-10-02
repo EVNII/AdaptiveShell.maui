@@ -454,6 +454,8 @@ jobs:
         run: |
           until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
           UITEST_PLATFORM=maccatalyst UITEST_APP_PATH="/Applications/ExampleAShellApp.app" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+      - name: Verify rendered button colors
+        run: python3 Tests/AdaptiveShell.UITests/Scripts/verify_mac_button_colors.py TestResults --strict > TestResults/button-colors.json
       - name: Upload shots
         if: always()
         uses: actions/upload-artifact@v4
@@ -463,6 +465,8 @@ jobs:
             TestResults/shots
             TestResults/screenshots
             TestResults/*.trx
+            TestResults/*.xml
+            TestResults/button-colors.json
             appium.log
           if-no-files-found: ignore
 
