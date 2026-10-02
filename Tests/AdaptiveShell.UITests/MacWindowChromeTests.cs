@@ -36,14 +36,20 @@ public class MacWindowChromeTests : BaseTest
             "The home navigation item must belong to a sidebar collection.");
         var sidebarBounds = ReadBounds(sidebar!, "sidebar");
 
-        var window = sidebar!.Ancestors()
-            .FirstOrDefault(element => element.Name.LocalName == "XCUIElementTypeWindow");
-        Assert.That(window, Is.Not.Null, "The sidebar must belong to a Mac window.");
-
-        foreach (var identifier in new[]
+        var buttonIdentifiers = new[]
         {
             "_XCUI:CloseWindow", "_XCUI:MinimizeWindow", "_XCUI:FullScreenWindow",
-        })
+        };
+        // Catalyst exposes an inner UIKit window inside the native SceneWindow.
+        // The traffic lights belong to the nearest ancestor window containing all three.
+        var window = sidebar!.Ancestors()
+            .FirstOrDefault(element => element.Name.LocalName == "XCUIElementTypeWindow"
+                && buttonIdentifiers.All(identifier => element.Descendants()
+                    .Any(child => (string?)child.Attribute("identifier") == identifier)));
+        Assert.That(window, Is.Not.Null,
+            "A sidebar ancestor window must contain all three native window buttons.");
+
+        foreach (var identifier in buttonIdentifiers)
         {
             var buttons = window!.Descendants()
                 .Where(element => (string?)element.Attribute("identifier") == identifier)
