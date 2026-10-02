@@ -65,6 +65,8 @@ jobs:
         run: |
           npm i -g appium
           appium driver install uiautomator2
+          mkdir -p TestResults
+          node -e 'const p=require("path"),f=require("fs"),o=require("os"); const a=process.env.APPIUM_HOME||p.join(o.homedir(),".appium"); const d=p.join(a,"node_modules/appium-uiautomator2-driver"); const q=require.resolve("appium-android-driver/package.json",{paths:[d]}); const read=x=>JSON.parse(f.readFileSync(x,"utf8")); const u=read(p.join(d,"package.json")),n=read(q); process.stdout.write(JSON.stringify({uiautomator2:{name:u.name,version:u.version},android:{name:n.name,version:n.version,package_json:q}},null,2));' > TestResults/android-driver-versions.json
 
       - name: Build example app
         # TargetFrameworks 单 TFM 覆盖:否则 restore 会要求 ios/maccatalyst workload;
@@ -89,15 +91,15 @@ jobs:
           script: |
             adb shell settings put global anr_show_background 0 || true
             until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
-            UITEST_PLATFORM=android UITEST_FORM=${{ matrix.form }} UITEST_APP_PATH="$GITHUB_WORKSPACE/Example/ExampleAShellApp/bin/Debug/net10.0-android/com.companyname.exampleashellapp-Signed.apk" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+            UITEST_PLATFORM=android UITEST_FORM=${{ matrix.form }} UITEST_APP_PATH="$GITHUB_WORKSPACE/Example/ExampleAShellApp/bin/Debug/net10.0-android/com.companyname.exampleashellapp-Signed.apk" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
 
-      - name: Upload failure artifacts
-        if: failure()
+      - name: Upload E2E evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: uitest-android-${{ matrix.form }}
           path: |
-            TestResults/screenshots
+            TestResults
             appium.log
           if-no-files-found: ignore
 
@@ -162,15 +164,15 @@ jobs:
           export UITEST_PLATFORM=ios UITEST_FORM=compact
           export UITEST_DEVICE_NAME="iPhone 16" UITEST_DEVICE_UDID="$UDID"
           export UITEST_APP_PATH="$GITHUB_WORKSPACE/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app"
-          dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+          dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
 
-      - name: Upload failure artifacts
-        if: failure()
+      - name: Upload E2E evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: uitest-ios
           path: |
-            TestResults/screenshots
+            TestResults
             appium.log
           if-no-files-found: ignore
 
@@ -213,14 +215,14 @@ jobs:
           if (-not $exe) { throw "ExampleAShellApp.exe not found" }
           $env:UITEST_PLATFORM = "windows"
           $env:UITEST_APP_PATH = $exe.FullName
-          dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+          dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
 
-      - name: Upload failure artifacts
-        if: failure()
+      - name: Upload E2E evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: uitest-windows
           path: |
-            TestResults/screenshots
+            TestResults
             appium.log
           if-no-files-found: ignore
