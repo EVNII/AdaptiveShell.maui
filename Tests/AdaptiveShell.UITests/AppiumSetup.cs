@@ -90,6 +90,11 @@ public static class AppiumSetup
         options.DeviceName = Environment.GetEnvironmentVariable("UITEST_DEVICE_NAME") ?? "iPhone 16";
         // CI 已预启动无窗口的模拟器;避免 Appium 为显示窗口再次重启。
         options.AddAdditionalAppiumOption("appium:isHeadless", true);
+        if (Form == "duo")
+        {
+            // 公开 Duo 诊断停在系统日志流启动；跳过该辅助流，保留驱动日志与全部界面断言。
+            options.AddAdditionalAppiumOption("appium:skipLogCapture", true);
+        }
         options.AddAdditionalAppiumOption("appium:simulatorStartupTimeout", 600000);
         // 干净机器上首个会话要现场编译 WebDriverAgent,远超默认 60s 的启动超时
         options.AddAdditionalAppiumOption("appium:wdaLaunchTimeout", 600000);

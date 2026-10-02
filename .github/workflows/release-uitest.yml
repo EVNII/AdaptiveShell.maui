@@ -343,8 +343,24 @@ jobs:
       - name: Start Appium
         run: npx appium > appium.log 2>&1 &
       - name: Run Duo UI tests
+        timeout-minutes: 30
         run: |
-          until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
+          python3 - <<'PY'
+          import json, pathlib, time, urllib.request
+          deadline = time.monotonic() + 60
+          while time.monotonic() < deadline:
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:4723/status", timeout=min(2, deadline - time.monotonic())) as response:
+                      status = json.load(response)
+                  if status.get("value", {}).get("ready") is True:
+                      pathlib.Path("TestResults/duo-appium-status.json").write_text(json.dumps(status), encoding="utf-8")
+                      break
+              except (OSError, ValueError):
+                  pass
+              time.sleep(min(2, max(0, deadline - time.monotonic())))
+          else:
+              raise SystemExit("Appium did not become ready within 60 seconds; see appium.log")
+          PY
           UITEST_PLATFORM=ios UITEST_FORM=duo \
           UITEST_DEVICE_NAME="$DUO_DEVICE_NAME" UITEST_DEVICE_UDID="$DUO_DEVICE_UDID" \
           UITEST_APP_PATH="$GITHUB_WORKSPACE/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app" \
