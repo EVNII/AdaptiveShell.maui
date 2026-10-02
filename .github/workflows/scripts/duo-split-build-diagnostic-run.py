@@ -10,6 +10,10 @@ import json
 import os
 from pathlib import Path
 import signal
+import hashlib
+import secrets
+import re
+import runpy
 import shutil
 import shlex
 import xml.etree.ElementTree as ET
@@ -494,6 +498,143 @@ def verify_full_suite():
     event("full-suite-trx-verified", records=12, passed=7, failed=0, platform_skipped=5)
 
 
+
+def remaining(deadline):
+    value = deadline - time.monotonic()
+    if value <= 0:
+        raise TimeoutError("Complete TestHost/barrier/boot/session/suite exceeded its shared1200s budget")
+    return value
+
+
+def atomic_json(path, value):
+    if path.exists():
+        raise ValueError("Diagnostic barrier output already exists; refusing reuse")
+    pending = path.with_name(path.name + ".tmp")
+    with pending.open("x", encoding="utf-8") as stream:
+        json.dump(value, stream, indent=2)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(pending, path)
+
+
+def file_sha256(path):
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            value.update(block)
+    return value.hexdigest()
+
+
+def wait_for_testhost(test, identity, deadline):
+    path = RESULTS / "duo-testhost-arrived.json"
+    # This does not change VSTest's original90s connection timeout. It also
+    # bounds adapter/discovery/setup arrival after an actual host connection.
+    arrival_deadline = min(deadline, time.monotonic() + 180)
+    while not path.exists():
+        remaining(arrival_deadline)
+        if test.poll() is not None:
+            raise RuntimeError(f"Complete test process exited {test.returncode} before OneTimeSetUp arrival")
+        time.sleep(0.1)
+    marker = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(marker, dict) or marker.get("status") != "before-create-driver":
+        raise ValueError("Invalid actual TestHost arrival marker")
+    for key, value in identity.items():
+        if marker.get(key) != value or type(marker.get(key)) is not type(value):
+            raise ValueError(f"Actual TestHost marker identity mismatch: {key}")
+    pid = marker.get("testhost_pid")
+    if type(pid) is not int or pid <= 1 or pid == test.pid or os.getpgid(pid) != test.pid:
+        raise ValueError("Marker TestHost PID is not a distinct member of this owned test process group")
+    args = marker.get("process_args")
+    if not isinstance(args, list) or not args or not isinstance(args[0], str) or Path(args[0]).name != "testhost.dll":
+        raise ValueError("Arrival did not come from the actual VSTest testhost.dll process")
+    if marker.get("assembly_path") != str(Path(identity["assembly_path"]).resolve()):
+        raise ValueError("Actual TestHost assembly path mismatch")
+    if test.poll() is not None:
+        raise RuntimeError("Complete test process exited while verifying TestHost arrival")
+    event("preboot-testhost-arrival-verified", marker=marker, owned_test_pgid=test.pid,
+          total_remaining_seconds=remaining(deadline))
+    return marker
+
+
+def boot_after_testhost(marker, deadline):
+    udid = marker["device_udid"]
+    if udid != os.environ.get("DUO_DEVICE_UDID"):
+        raise ValueError("Barrier and prepared actual Duo UDIDs differ")
+    prepared = json.loads((RESULTS / "duo-environment.json").read_text(encoding="utf-8"))
+    if prepared.get("status") != "verified" or prepared.get("device", {}).get("udid") != udid:
+        raise ValueError("Boot barrier lacks the same verified prepared Duo environment")
+    def native(command, filename, seconds):
+        code = capture(command, filename, timeout=min(seconds, remaining(deadline)))
+        remaining(deadline)
+        if code != 0:
+            raise RuntimeError(f"Native boot proof failed: {filename}, exit {code}")
+        return (RESULTS / filename).read_text(encoding="utf-8").strip()
+    event("preboot-testhost-boot-begin", device_udid=udid,
+          total_remaining_seconds=remaining(deadline))
+    native(["xcrun", "simctl", "boot", udid], "duo-testhost-boot.txt", 60)
+    native(["xcrun", "simctl", "bootstatus", udid, "-b"], "duo-testhost-bootstatus.txt", 600)
+    model = native(["xcrun", "simctl", "getenv", udid, "SIMULATOR_MODEL_IDENTIFIER"], "duo-model.txt", 30)
+    if model != "iPhone19,4":
+        raise ValueError("Actual booted simulator model is not iPhone19,4")
+    displays = native(["xcrun", "simctl", "io", udid, "enumerate"], "duo-displays.txt", 30)
+    observed = json.loads(native(["xcrun", "simctl", "list", "-j"], "duo-testhost-native-after-boot.json", 30))
+    # Reuse the unchanged prepare-duo exact runtime/device-type validator on
+    # the fresh native readback; no device is created or selected here.
+    prepare = runpy.run_path(".github/workflows/scripts/prepare-duo.py")
+    runtime, device_type, devices = prepare["pinned_runtime"](observed)
+    selected = [d for d in devices if isinstance(d, dict) and d.get("udid") == udid]
+    all_selected = [d for group in observed["devices"].values() if isinstance(group, list)
+                    for d in group if isinstance(d, dict) and d.get("udid") == udid]
+    if (len(selected) != 1 or len(all_selected) != 1 or selected[0].get("state") != "Booted"
+            or selected[0].get("isAvailable") is not True
+            or selected[0].get("deviceTypeIdentifier") != prepare["DEVICE_TYPE"]
+            or device_type.get("modelIdentifier") != model):
+        raise ValueError("Fresh native environment is not the exact available Booted Duo")
+    sdk = native(["xcrun", "--sdk", "iphonesimulator", "--show-sdk-version"], "duo-testhost-sdk-after-boot.txt", 30)
+    xcode = native(["xcodebuild", "-version"], "duo-testhost-xcode-after-boot.txt", 30)
+    if (sdk != "27.1" or prepared.get("sdk", {}).get("version") != sdk
+            or prepared.get("xcode", {}).get("version_output") != xcode
+            or re.fullmatch(r"Xcode 27\.1\s+Build version [A-Za-z0-9]+", xcode) is None):
+        raise ValueError("Selected Xcode/simulator SDK changed during boot")
+    screens = {}
+    for match in re.finditer(r"(?ms)^\s+\((\d+)\) ([^:\n]+):\n(.*?)(?=^\s+\(\d+\) [^:\n]+:\n|^Port:|\Z)", displays):
+        identifier, name, block = int(match[1]), match[2], match[3]
+        kind = re.search(r"(?m)^\s+Screen Type: (\S+)\s*$", block)
+        if kind is None or kind[1] != "Integrated":
+            continue
+        if identifier in screens:
+            raise ValueError("Duplicate native integrated display ID")
+        pixel = re.search(r"Pixel Size: \{(\d+), (\d+)\}", block)
+        scale = re.search(r"Preferred UI Scale: (\d+)", block)
+        actual_id = re.search(r"Screen ID: (\d+)", block)
+        device = re.search(r"(?m)^\s+Device Name: (\S+)\s*$", block)
+        if pixel is None or scale is None or actual_id is None or device is None or int(actual_id[1]) != identifier:
+            raise ValueError("Incomplete actual integrated display evidence")
+        screens[identifier] = {"id": identifier, "name": name, "device_name": device[1],
+                               "width": int(pixel[1]), "height": int(pixel[2]), "scale": int(scale[1])}
+    expected = {1: {"id": 1, "name": "LCD", "device_name": "primary", "width": 1398, "height": 2034, "scale": 3},
+                3: {"id": 3, "name": "LCD-1", "device_name": "primary-1", "width": 2007, "height": 2853, "scale": 3}}
+    if screens != expected:
+        raise ValueError("Native default-pose dual displays do not exactly match the observed Duo contract")
+    proof = {"status": "verified", "device_udid": udid, "model": model,
+             "runtime_identifier": runtime["identifier"], "runtime_version": runtime["version"],
+             "runtime_build": runtime["buildversion"], "device_type_identifier": device_type["identifier"],
+             "bootstatus_exit_code": 0, "dual_displays_verified": True, "displays": list(screens.values()),
+             "sdk_version": sdk, "xcode_version_output": xcode,
+             "native_environment_sha256": file_sha256(RESULTS / "duo-testhost-native-after-boot.json"),
+             "display_evidence_sha256": file_sha256(RESULTS / "duo-displays.txt")}
+    atomic_json(RESULTS / "duo-testhost-boot-proof.json", proof)
+    event("preboot-testhost-boot-verified", proof=proof,
+          total_remaining_seconds=remaining(deadline))
+    # Fresh live postboot status is required; preboot ready JSON is insufficient.
+    if not wait_ready(None, "http://127.0.0.1:4723/status", min(180, remaining(deadline))):
+        raise RuntimeError("Appium is not live after actual Duo boot")
+    remaining(deadline)
+    resource_observation("after-boot")
+    remaining(deadline)
+    return proof
+
+
 def main():
     RESULTS.mkdir(parents=True, exist_ok=True)
     test = None
@@ -502,21 +643,55 @@ def main():
     try:
         verify_prebuilt_wda_configuration()
         phase = "appium-readiness"
-        # Probe the live server again after simulator boot. Preboot status is
-        # evidence only and must never satisfy this fresh readiness check.
+        # Require the live server before starting the actual TestHost. A second
+        # fresh readiness check after native boot is required before release.
         if not wait_ready(None, "http://127.0.0.1:4723/status", 180):
             exit_code = 2
         else:
-            phase = "complete-suite-test"
+            phase = "complete-suite-testhost-preboot"
+            if os.environ.get("DUO_DIAGNOSTIC_PREBOOT_HOST") != "true":
+                raise ValueError("This diagnostic requires explicit preboot TestHost opt-in")
+            for name in ("duo-testhost-arrived.json", "duo-testhost-release.json", "duo-testhost-boot-proof.json"):
+                if (RESULTS / name).exists():
+                    raise ValueError("Diagnostic barrier files already exist; refusing a second test process")
+            handoff = json.loads((RESULTS / "duo-split-consumer.json").read_text(encoding="utf-8"))
+            assembly = Path("Tests/AdaptiveShell.UITests/bin/Debug/net10.0/AdaptiveShell.UITests.dll").resolve()
+            if handoff.get("status") != "verified" or handoff.get("test_assembly_sha256") != file_sha256(assembly):
+                raise ValueError("Actual assembly does not match the verified build handoff")
+            identity = {"run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                        "head_sha": os.environ["GITHUB_SHA"], "device_udid": os.environ["DUO_DEVICE_UDID"],
+                        "nonce": secrets.token_hex(32), "assembly_path": str(assembly),
+                        "assembly_sha256": handoff["test_assembly_sha256"]}
+            environment = os.environ.copy()
+            environment.update(DUO_DIAGNOSTIC_BARRIER_NONCE=identity["nonce"],
+                               DUO_DIAGNOSTIC_ASSEMBLY_SHA256=identity["assembly_sha256"])
             command = [
                 "dotnet", "test", "Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj",
                 "--no-build", "--no-restore",
                 "--logger", "trx;LogFileName=e2e.trx", "--logger", "console;verbosity=detailed",
                 "--results-directory", "TestResults", "--diag", "TestResults/duo-vstest.log",
             ]
+            # One clock begins BEFORE spawn and includes TestHost, barrier,
+            # boot, postboot readiness, original Appium session and all tests.
+            deadline = time.monotonic() + 1200
+            event("preboot-testhost-single-process-begin", budget_seconds=1200,
+                  scope="one unfiltered full suite; shared budget includes actual Duo boot")
             with (RESULTS / "duo-test-console.log").open("wb") as test_log:
-                test = start_owned(command, stdout=test_log, stderr=subprocess.STDOUT)
-                exit_code = wait_test(test, 1200)
+                test = start_owned(command, stdout=test_log, stderr=subprocess.STDOUT, env=environment)
+                marker = wait_for_testhost(test, identity, deadline)
+                phase = "exact-duo-boot-after-testhost"
+                boot_after_testhost(marker, deadline)
+                if test.poll() is not None or os.getpgid(marker["testhost_pid"]) != test.pid:
+                    raise RuntimeError("Actual waiting TestHost exited before boot release")
+                release = {key: marker[key] for key in
+                           ("run_id", "run_attempt", "head_sha", "device_udid", "nonce", "testhost_pid", "assembly_sha256")}
+                release.update(status="boot-verified", boot_proof_sha256=file_sha256(RESULTS / "duo-testhost-boot-proof.json"))
+                remaining(deadline)
+                atomic_json(RESULTS / "duo-testhost-release.json", release)
+                phase = "complete-suite-after-native-boot-release"
+                event("preboot-testhost-atomic-release", testhost_pid=marker["testhost_pid"],
+                      total_remaining_seconds=remaining(deadline))
+                exit_code = wait_test(test, remaining(deadline))
                 if exit_code == 0:
                     phase = "prebuilt-wda-session-options"
                     verify_prebuilt_wda_configuration(require_session=True)
@@ -546,6 +721,7 @@ def main():
         result = {"scope": "bounded complete-suite diagnostic; strict raw four-phase gate remains required",
                   "phase": phase, "exit_code": exit_code,
                   "appium_ready_budget_seconds": 180, "test_budget_seconds": 1200,
+                  "budget_scope": "one complete process: TestHost/barrier/actual boot/Appium session/all tests",
                   "appium_start_path": "global Appium command; started and checked before simulator boot"}
         (RESULTS / "duo-full-diagnostic.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         event("diagnostic-complete", **result)

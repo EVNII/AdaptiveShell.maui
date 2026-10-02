@@ -1,11 +1,12 @@
-name: Duo complete suite optional split-build diagnostic
+name: Duo complete suite split-build preboot TestHost diagnostic
 
 # TEMP candidate only. Base application/tests/verifier must be public6200c2bf.
 # Publish only on a separate diagnostic branch after review; never replaces full31.
-# Only app/test workload+build moves to another free runner. WDA and UI stay here.
+# App/test workload+build stays on another free runner; the one real TestHost
+# reaches OneTimeSetUp before this consumer boots the same Duo for WDA and UI.
 # Replace only .github/workflows/release-uitest.yml (the registered workflow),
-# plus the two reviewed TEMP Python files at their referenced script paths.
-# Transfer code rejects any application/test/verifier change from controlled6200.
+# plus the two reviewed TEMP Python files and the SessionHost diagnostic hook.
+# Transfer code rejects all other application/test/verifier changes from6200.
 on:
   workflow_dispatch:
 
@@ -182,31 +183,7 @@ jobs:
             TestResults/duo-*
             appium.log
           if-no-files-found: warn
-      - name: Boot the original exact Duo
-        timeout-minutes: 10
-        run: |
-          xcrun simctl boot "$DUO_DEVICE_UDID"
-          xcrun simctl bootstatus "$DUO_DEVICE_UDID" -b
-          xcrun simctl getenv "$DUO_DEVICE_UDID" SIMULATOR_MODEL_IDENTIFIER > TestResults/duo-model.txt
-          test "$(cat TestResults/duo-model.txt)" = "iPhone19,4"
-          xcrun simctl io "$DUO_DEVICE_UDID" enumerate > TestResults/duo-displays.txt
-      - name: Capture bounded resource observations immediately after boot
-        timeout-minutes: 2
-        run: python3 "$RUNNER_TEMP/duo-startup-probe.py" --resource-observation after-boot
-      - name: Immediately upload postboot raw observations
-        if: always()
-        timeout-minutes: 5
-        uses: actions/upload-artifact@v4
-        with:
-          name: duo-split-postboot-resources
-          path: |
-            TestResults/duo-split-resources-after-boot*
-            TestResults/duo-split-consumer.json
-            TestResults/duo-split-manifest.json
-            TestResults/duo-model.txt
-            TestResults/duo-displays.txt
-          if-no-files-found: warn
-      - name: Run the original unfiltered complete12 with no build and no restore
+      - name: Run one complete12 TestHost before exact Duo boot (no build or restore)
         timeout-minutes: 25
         env:
           UITEST_PLATFORM: ios
@@ -214,6 +191,7 @@ jobs:
           UITEST_DEVICE_NAME: ${{ env.DUO_DEVICE_NAME }}
           UITEST_DEVICE_UDID: ${{ env.DUO_DEVICE_UDID }}
           UITEST_APP_PATH: ${{ github.workspace }}/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app
+          DUO_DIAGNOSTIC_PREBOOT_HOST: 'true'
         run: python3 "$RUNNER_TEMP/duo-startup-probe.py"
       - name: Verify the original strict raw four-phase evidence without fallback
         timeout-minutes: 2

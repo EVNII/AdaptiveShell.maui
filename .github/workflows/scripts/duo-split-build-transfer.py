@@ -25,6 +25,7 @@ WORKFLOW = ".github/workflows/release-uitest.yml"
 BASELINE_SHA = "6200c2bf798d3caeef8b47cda071aeb7f8607c8e"
 DIAGNOSTIC_FILES = {
     WORKFLOW,
+    "Tests/AdaptiveShell.UITests/SessionHost.cs",
     ".github/workflows/scripts/duo-split-build-transfer.py",
     ".github/workflows/scripts/duo-split-build-diagnostic-run.py",
 }
@@ -143,8 +144,9 @@ def ci_identity():
     workflow_path = workflow_ref[len(repository) + 1:].split("@", 1)[0]
     safe_relative(workflow_path)
     require(workflow_path == WORKFLOW, "This candidate must run from the registered release-uitest.yml")
-    # Both checkout steps fetch baseline history. No application, test, verifier,
-    # package reference or other source change is permitted in this experiment.
+    # Both checkout steps fetch baseline history. Only the diagnostic SessionHost
+    # barrier plus workflow/helpers may differ; no application, [Test] body,
+    # verifier or package-reference change is permitted in this experiment.
     command(["git", "cat-file", "-e", BASELINE_SHA + "^{commit}"], workspace)
     changed = command(["git", "diff", "--name-only", BASELINE_SHA, "HEAD", "--"], workspace)
     changed_paths = sorted(changed.splitlines()) if changed else []
