@@ -600,9 +600,6 @@ jobs:
       - uitest-windows
       - uitest-maccatalyst
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -626,12 +623,3 @@ jobs:
           name: uitest-report
           path: report
           if-no-files-found: ignore
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: report
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
