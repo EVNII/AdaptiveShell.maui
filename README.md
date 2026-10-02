@@ -89,6 +89,7 @@ Tests/AdaptiveShell.UITests/run-uitest.ps1
 Configuration via environment variables: `UITEST_PLATFORM`, `UITEST_FORM` (`compact`|`wide`|`duo`), `UITEST_APP_PATH`, `UITEST_DEVICE_NAME`, `UITEST_DEVICE_UDID`, `UITEST_APPIUM_URL`.
 
 `DarkModeTests` additionally switches the system appearance (adb `uimode`, `simctl ui appearance`, Windows registry theme) and verifies the shell stays functional in dark mode; screenshots from both themes land in the report.
+Android also reads back native night mode; the locked API29 CI image uses an explicitly enabled privileged emulator shell for the same system service command.
 
 Android theme tests also require Python 3 to verify status-bar foreground contrast from three original screenshots and native `mobile:getSystemBars` frames. Missing evidence or invisible status-bar foreground fails the theme test.
 
