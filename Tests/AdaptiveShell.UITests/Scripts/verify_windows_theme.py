@@ -6,9 +6,11 @@ Required: TestResults/windows-{light,dark,light-restored}.{json,xml}, plus the
 PNG named by each JSON. JSON contains stage, png, coordinateSource, window and
 elements frames. window is copied from that phase's native PageSource Window;
 elements are the app-session Location/Size, checked against the unique matching
-XML AutomationId. The PNG must match the XML Window's 1x dimensions (at most
-one pixel of rounding). Window-position APIs can include invisible borders;
-nativeWindow/sessionWindow are diagnostic records, never screenshot origins.
+XML AutomationId. These describe the PageSource coordinate space, not assumed
+absolute desktop positions. The PNG must match the XML Window's 1x dimensions
+(at most one pixel of rounding). Window-position APIs can use a separate desktop
+coordinate space and include invisible borders; nativeWindow/sessionWindow are
+diagnostic records, never screenshot origins.
 Arbitrary scaling, guessed offsets and launch-only frames are rejected.
 
 Icon sampling deliberately supports the example's compact NavigationView only:
@@ -83,8 +85,9 @@ def map_frames(metadata, png, source):
     if window != xml_window:
         raise ValueError("JSON Window bounds do not agree exactly with the same-phase XML Window")
     # Actual captures establish the PageSource Window as the screenshot frame.
-    # Native window-position APIs include invisible borders and are not used to
-    # invent an offset. Every API element below must corroborate this XML tree.
+    # Window-position APIs use a separate coordinate space and can include
+    # invisible borders; they are not used to invent a desktop offset. Every
+    # app-session API element below must corroborate this same XML tree.
     scale = 1
     residuals = [abs(png.width - window["width"]), abs(png.height - window["height"])]
     if max(residuals) > 1:
@@ -115,7 +118,7 @@ def map_frames(metadata, png, source):
                    for name in ("nativeWindow", "sessionWindow") if name in metadata}
     return mapped, {"model": "windows_page_source_window_pixels", "scale": scale,
                     "dimension_residual_pixels": residuals,
-                    "origin_screen": [window["x"], window["y"]], "window": window,
+                    "origin_source": [window["x"], window["y"]], "window": window,
                     "xml_window": xml_window, "xml_element_frames": xml_elements,
                     "api_window_diagnostics": diagnostics,
                     "element_frames_pixels": mapped}

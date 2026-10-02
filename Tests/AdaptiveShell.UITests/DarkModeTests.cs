@@ -206,6 +206,14 @@ public class DarkModeTests : BaseTest
 
     void CaptureThemeStage(string stage, int sequence, string ordinaryLabel)
     {
+        if (AppiumSetup.Platform == "ios" && AppiumSetup.Form == "duo")
+        {
+            var duoResults = Path.Combine(AppiumSetup.RepoRoot, "TestResults");
+            Directory.CreateDirectory(duoResults);
+            XDocument.Parse(Driver.PageSource).Save(Path.Combine(duoResults, $"duo-{stage}.xml"));
+            Shots.Save(Driver, $"theme-{stage}", sequence);
+            return;
+        }
         if (AppiumSetup.Platform != "windows")
         {
             Shot(ordinaryLabel);

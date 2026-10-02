@@ -47,7 +47,7 @@ public class NavigationTests : BaseTest
         }
         Shot("group-opened");
 
-        if (childEntry is null)
+        if (childEntry is null && AppiumSetup.Platform == "windows")
         {
             // Windows:点组即选中首个子页,内容已切换
             Driver.WaitForAccessibilityId("counterBtn");
@@ -55,7 +55,9 @@ public class NavigationTests : BaseTest
             return;
         }
 
-        childEntry.Click();
+        Assert.That(childEntry, Is.Not.Null,
+            "Non-Windows platforms must expose the group child entry before testing navigation.");
+        childEntry!.Click();
         Driver.WaitForAccessibilityId("counterBtn");
         Shot("group-child");
 
