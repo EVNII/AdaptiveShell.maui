@@ -94,6 +94,32 @@ public static class AppiumSetup
         {
             // 公开 Duo 诊断停在系统日志流启动；跳过该辅助流，保留驱动日志与全部界面断言。
             options.AddAdditionalAppiumOption("appium:skipLogCapture", true);
+            // 保留 WebDriverAgent 的构建与启动输出，便于公开 CI 追踪。
+            options.AddAdditionalAppiumOption("appium:showXcodeLog", true);
+            // Duo CI 可显式使用提前构建的 WDA，避免模拟器启动时同时编译。
+            var prebuilt = Environment.GetEnvironmentVariable("DUO_DIAGNOSTIC_USE_PREBUILT_WDA");
+            var derivedData = Environment.GetEnvironmentVariable("DUO_DIAGNOSTIC_WDA_DERIVED_DATA_PATH");
+            if (prebuilt is not null || derivedData is not null)
+            {
+                if (prebuilt != "true" || string.IsNullOrWhiteSpace(derivedData)
+                    || !Path.IsPathFullyQualified(derivedData) || !Directory.Exists(derivedData))
+                {
+                    throw new InvalidOperationException("Duo prebuilt WDA requires explicit opt-in and an existing absolute derivedDataPath.");
+                }
+                var capabilities = new Dictionary<string, object>
+                {
+                    ["appium:usePrebuiltWDA"] = true,
+                    ["appium:derivedDataPath"] = derivedData,
+                    ["appium:usePreinstalledWDA"] = false,
+                    ["appium:useSimpleBuildTest"] = false,
+                };
+                foreach (var capability in capabilities)
+                    options.AddAdditionalAppiumOption(capability.Key, capability.Value);
+                var results = Path.Combine(RepoRoot, "TestResults");
+                Directory.CreateDirectory(results);
+                File.WriteAllText(Path.Combine(results, "duo-wda-session-capabilities.json"),
+                    System.Text.Json.JsonSerializer.Serialize(capabilities));
+            }
         }
         options.AddAdditionalAppiumOption("appium:simulatorStartupTimeout", 600000);
         // 干净机器上首个会话要现场编译 WebDriverAgent,远超默认 60s 的启动超时

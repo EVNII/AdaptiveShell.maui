@@ -5,10 +5,12 @@ Usage: python3 verify-duo-evidence.py ARTIFACT_ROOT --strict
 Exit 1 means contradictory evidence; exit 2 means missing, unreadable or
 ambiguous evidence. This verifies the captured default pose, not fold coverage
 or theme colors. WDA /wda/screens supplies displayId/isMain/scale/bounds/traits.
-PNG dimensions and full application AX bounds must identify the SAME unique
-screen using its actual scale. No guessed scale, crop, main-screen fallback or
-rotated bounds are accepted. An unsupported coordinate contract must fail until
-actual evidence establishes it.
+The captured iOS 27.1 XCUIScreen contract reports bounds in PIXELS. PNG
+dimensions must equal those pixel bounds, while the
+full application AX frame in POINTS multiplied by the reported screen scale
+must equal the same bounds. These independent matches must identify the SAME
+unique displayId. Residuals are in pixels. No point-bounds schema fallback,
+guessed scale, crop, main-screen fallback or rotated bounds are accepted.
 """
 
 import argparse
@@ -188,7 +190,8 @@ def screens(root):
             raise EvidenceError("WDA screen.traits must be an integer")
         result.append({"displayId": display_id, "isMain": value["isMain"],
                        "scale": number(value.get("scale"), "screen.scale", positive=True),
-                       "bounds": frame(value.get("bounds"), "screen.bounds"), "traits": traits})
+                       "bounds": frame(value.get("bounds"), "screen.bounds"),
+                       "bounds_unit": "pixels", "traits": traits})
     if len({value["displayId"] for value in result}) != len(result):
         raise EvidenceError("WDA screens contain duplicate display IDs")
     if sum(value["isMain"] for value in result) != 1:
@@ -257,13 +260,11 @@ def analyze(root, stage, screen_values, PNG):
     png_candidates, ax_candidates = [], []
     for screen in screen_values:
         bounds, scale = screen["bounds"], screen["scale"]
-        if (abs(png.width - bounds["width"] * scale) <= 1
-                and abs(png.height - bounds["height"] * scale) <= 1):
+        if (abs(png.width - bounds["width"]) <= 1
+                and abs(png.height - bounds["height"]) <= 1):
             png_candidates.append(screen)
-        if (abs(app_frame["x"] - bounds["x"]) <= 1
-                and abs(app_frame["y"] - bounds["y"]) <= 1
-                and abs(app_frame["width"] - bounds["width"]) <= 1
-                and abs(app_frame["height"] - bounds["height"]) <= 1):
+        if all(abs(app_frame[key] * scale - bounds[key]) <= 1
+               for key in ("x", "y", "width", "height")):
             ax_candidates.append(screen)
     if not png_candidates or not ax_candidates:
         raise Mismatch("PNG pixels and AX points do not both match a real WDA screen at its native scale")
@@ -274,9 +275,16 @@ def analyze(root, stage, screen_values, PNG):
     return {"stage": stage, "evidence_status": "match", "xml": str(xml_path),
             "png": str(png_path), "png_size": [png.width, png.height],
             "application_frame": app_frame, "elements": elements,
-            "screen": screen, "mapping": "full-screen AX points at actual WDA scale",
-            "dimension_residual_pixels": [abs(png.width - screen["bounds"]["width"] * screen["scale"]),
-                                          abs(png.height - screen["bounds"]["height"] * screen["scale"])]}
+            "screen": screen,
+            "mapping": "WDA pixel bounds = PNG pixels = full-screen AX points × reported WDA scale",
+            "coordinate_units": {"screen_bounds": "pixels", "png_size": "pixels",
+                                 "application_frame": "points", "elements": "points",
+                                 "residuals": "pixels"},
+            "dimension_residual_pixels": [abs(png.width - screen["bounds"]["width"]),
+                                          abs(png.height - screen["bounds"]["height"])],
+            "application_residual_pixels": {
+                key: abs(app_frame[key] * screen["scale"] - screen["bounds"][key])
+                for key in ("x", "y", "width", "height")}}
 
 
 def main():

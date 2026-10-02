@@ -294,6 +294,8 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 90
     name: uitest-ios (27.1, iPhone Duo) [beta]
+    env:
+      DUO_REMOVE_UNUSED_27_0_RUNTIME: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -311,6 +313,9 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks
           test "$(xcrun --sdk iphonesimulator --show-sdk-version)" = "27.1"
+      - name: Remove only unused iOS 27.0 runtime images in this Duo VM
+        timeout-minutes: 6
+        run: python3 .github/workflows/scripts/duo-prune-runtime.py
       - name: Install exact Duo simulator runtime
         run: xcodebuild -downloadPlatform iOS -buildVersion 24A94401 -architectureVariant arm64
       - name: Prepare and verify iPhone Duo
@@ -319,7 +324,7 @@ jobs:
         run: dotnet workload install maui-ios --from-rollback-file workloads.rollback.json
       - name: Build Duo app with iOS 27.1 SDK
         run: |
-          dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64 -p:MtouchLink=SdkOnly -p:MtouchSdkVersion=27.1
+          dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj --disable-build-servers -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64 -p:MtouchLink=SdkOnly -p:MtouchSdkVersion=27.1
           APP="Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app"
           SDK=$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$APP/Info.plist")
           test "$SDK" = "iphonesimulator27.1"
@@ -333,6 +338,18 @@ jobs:
           appium --version > TestResults/duo-appium-version.txt
           appium driver list --installed --json > TestResults/duo-drivers.json
           node -e 'const p=require("path"),f=require("fs"),o=require("os"); const a=process.env.APPIUM_HOME||p.join(o.homedir(),".appium"); const q=require.resolve("appium-webdriveragent/package.json",{paths:[p.join(a,"node_modules/appium-xcuitest-driver")]}); process.stdout.write(f.readFileSync(q,"utf8"));' > TestResults/duo-wda-version.json
+      # Requires the Duo opt-in C# hook: usePrebuiltWDA and the exact exported path.
+      - name: Build installed WDA16.12.11 for exact Shutdown Duo before boot
+        timeout-minutes: 15
+        run: python3 .github/workflows/scripts/duo-wda-prebuild.py build
+      - name: Build UI test assembly before simulator boot
+        run: dotnet build Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --disable-build-servers
+      - name: Shut down build servers before simulator boot
+        timeout-minutes: 2
+        run: python3 .github/workflows/scripts/duo-ci-server.py shutdown-build-servers
+      - name: Start installed global Appium and verify live status before boot
+        timeout-minutes: 4
+        run: python3 .github/workflows/scripts/duo-ci-server.py start
       - name: Boot iPhone Duo
         run: |
           xcrun simctl boot "$DUO_DEVICE_UDID"
@@ -340,31 +357,17 @@ jobs:
           xcrun simctl getenv "$DUO_DEVICE_UDID" SIMULATOR_MODEL_IDENTIFIER > TestResults/duo-model.txt
           test "$(cat TestResults/duo-model.txt)" = "iPhone19,4"
           xcrun simctl io "$DUO_DEVICE_UDID" enumerate > TestResults/duo-displays.txt
-      - name: Start Appium
-        run: npx appium > appium.log 2>&1 &
       - name: Run Duo UI tests
         timeout-minutes: 30
         run: |
-          python3 - <<'PY'
-          import json, pathlib, time, urllib.request
-          deadline = time.monotonic() + 60
-          while time.monotonic() < deadline:
-              try:
-                  with urllib.request.urlopen("http://127.0.0.1:4723/status", timeout=min(2, deadline - time.monotonic())) as response:
-                      status = json.load(response)
-                  if status.get("value", {}).get("ready") is True:
-                      pathlib.Path("TestResults/duo-appium-status.json").write_text(json.dumps(status), encoding="utf-8")
-                      break
-              except (OSError, ValueError):
-                  pass
-              time.sleep(min(2, max(0, deadline - time.monotonic())))
-          else:
-              raise SystemExit("Appium did not become ready within 60 seconds; see appium.log")
-          PY
+          python3 .github/workflows/scripts/duo-wda-prebuild.py verify
+          python3 .github/workflows/scripts/duo-ci-server.py wait
           UITEST_PLATFORM=ios UITEST_FORM=duo \
           UITEST_DEVICE_NAME="$DUO_DEVICE_NAME" UITEST_DEVICE_UDID="$DUO_DEVICE_UDID" \
           UITEST_APP_PATH="$GITHUB_WORKSPACE/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app" \
-            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --no-build --no-restore --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+      - name: Verify Duo actual prebuilt WDA session options
+        run: python3 .github/workflows/scripts/duo-wda-prebuild.py verify-session
       - name: Verify Duo device and screenshot evidence
         run: python3 .github/workflows/scripts/verify-duo-evidence.py TestResults --strict > TestResults/duo-checks.json
       - name: Upload Duo evidence
