@@ -94,6 +94,8 @@ public static class AppiumSetup
         {
             // 公开 Duo 诊断停在系统日志流启动；跳过该辅助流，保留驱动日志与全部界面断言。
             options.AddAdditionalAppiumOption("appium:skipLogCapture", true);
+            // 仅独立启动诊断：保存 WebDriverAgent 的实际构建输出。
+            options.AddAdditionalAppiumOption("appium:showXcodeLog", true);
         }
         options.AddAdditionalAppiumOption("appium:simulatorStartupTimeout", 600000);
         // 干净机器上首个会话要现场编译 WebDriverAgent,远超默认 60s 的启动超时

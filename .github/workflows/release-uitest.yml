@@ -1,6 +1,6 @@
-name: Duo startup diagnostic
+name: Duo resource and startup diagnostic
 
-# Read-only startup investigation on a separate public diagnostic branch.
+# Startup/resource investigation on a separate public diagnostic branch.
 # This single filtered test does not satisfy the release/full-theme gate.
 on:
   workflow_dispatch:
@@ -15,7 +15,11 @@ jobs:
   duo-startup-diagnostic:
     runs-on: xcode-27
     timeout-minutes: 90
-    name: Duo startup diagnostic (27.1, same startup path)
+    name: Duo resource and startup diagnostic (27.1)
+    env:
+      # Explicit resource comparison switch for this dedicated CI VM only.
+      # Set false for the control; no SDKs or iOS 27.1 images are selected.
+      DUO_REMOVE_UNUSED_27_0_RUNTIME: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -34,61 +38,14 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks
           test "$(xcrun --sdk iphonesimulator --show-sdk-version)" = "27.1"
-      - name: Install exact Duo simulator runtime
-        timeout-minutes: 30
-        run: xcodebuild -downloadPlatform iOS -buildVersion 24A94401 -architectureVariant arm64
-      - name: Prepare and verify iPhone Duo
-        timeout-minutes: 5
-        run: python3 .github/workflows/scripts/prepare-duo.py --output TestResults/duo-environment.json
-      - name: Install MAUI workloads
-        timeout-minutes: 15
-        run: dotnet workload install maui-ios --from-rollback-file workloads.rollback.json
-      - name: Build Duo app with iOS 27.1 SDK
-        timeout-minutes: 20
+      - name: Prepare bounded diagnostic helper
         run: |
-          dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64 -p:MtouchLink=SdkOnly -p:MtouchSdkVersion=27.1
-          APP="Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app"
-          SDK=$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$APP/Info.plist")
-          test "$SDK" = "iphonesimulator27.1"
-          plutil -p "$APP/Info.plist" > TestResults/duo-build-info.txt
-          xcrun vtool -show-build "$APP/ExampleAShellApp" > TestResults/duo-native-build.txt
-          python3 -c 'import re,pathlib; assert re.search(r"sdk\s+27\.1(?:\s|$)", pathlib.Path("TestResults/duo-native-build.txt").read_text()), "Native binary was not built with SDK 27.1"'
-      - name: Install Appium
-        timeout-minutes: 10
-        run: |
-          npm i -g appium
-          appium driver install xcuitest
-          appium --version > TestResults/duo-appium-version.txt
-          appium driver list --installed --json > TestResults/duo-drivers.json
-          node -e 'const p=require("path"),f=require("fs"),o=require("os"); const a=process.env.APPIUM_HOME||p.join(o.homedir(),".appium"); const q=require.resolve("appium-webdriveragent/package.json",{paths:[p.join(a,"node_modules/appium-xcuitest-driver")]}); process.stdout.write(f.readFileSync(q,"utf8"));' > TestResults/duo-wda-version.json
-      - name: Boot iPhone Duo
-        timeout-minutes: 10
-        run: |
-          xcrun simctl boot "$DUO_DEVICE_UDID"
-          xcrun simctl bootstatus "$DUO_DEVICE_UDID" -b
-          xcrun simctl getenv "$DUO_DEVICE_UDID" SIMULATOR_MODEL_IDENTIFIER > TestResults/duo-model.txt
-          test "$(cat TestResults/duo-model.txt)" = "iPhone19,4"
-          xcrun simctl io "$DUO_DEVICE_UDID" enumerate > TestResults/duo-displays.txt
-      - name: Build UI test assembly (outside startup deadline)
-        timeout-minutes: 10
-        run: dotnet build Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
-      - name: Start Appium
-        run: npx appium > appium.log 2>&1 &
-      - name: Run bounded Duo startup diagnostic
-        timeout-minutes: 9
-        env:
-          UITEST_PLATFORM: ios
-          UITEST_FORM: duo
-          UITEST_DEVICE_NAME: ${{ env.DUO_DEVICE_NAME }}
-          UITEST_DEVICE_UDID: ${{ env.DUO_DEVICE_UDID }}
-          UITEST_APP_PATH: ${{ github.workspace }}/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app
-        run: |
-          python3 - <<'PY'
+          cat > "$RUNNER_TEMP/duo-startup-probe.py" <<'PY'
           #!/usr/bin/env python3
           """Duo startup diagnostic only; never a release/theme quality gate.
 
           The test source and Appium startup/retry timeouts remain unchanged. An external
-          watchdog bounds Appium readiness to 60s and the filtered test process to 300s.
+          watchdog bounds Appium readiness to 180s and the filtered test process to 900s.
           Test/capture commands own process groups; the watchdog kills their descendants.
           """
           from datetime import datetime, timezone
@@ -308,7 +265,7 @@ jobs:
               try:
                   # Keep the original preceding Start Appium workflow step untouched.
                   # No server restart here: failure can expose the cross-step process path.
-                  if not wait_ready(None, "http://127.0.0.1:4723/status", 60):
+                  if not wait_ready(None, "http://127.0.0.1:4723/status", 180):
                       exit_code = 2
                   else:
                       phase = "filtered-test"
@@ -321,7 +278,7 @@ jobs:
                       ]
                       with (RESULTS / "duo-test-console.log").open("wb") as test_log:
                           test = start_owned(command, stdout=test_log, stderr=subprocess.STDOUT)
-                          exit_code = wait_test(test, 300)
+                          exit_code = wait_test(test, 900)
               except Exception as error:
                   event("diagnostic-error", phase=phase, type=type(error).__name__, error=str(error))
               finally:
@@ -340,16 +297,197 @@ jobs:
                       event("live-log-flush-error", error=str(log_error))
                   result = {"scope": "startup diagnostic only; not a release/theme quality gate",
                             "phase": phase, "exit_code": exit_code,
-                            "appium_ready_budget_seconds": 60, "test_budget_seconds": 300,
+                            "appium_ready_budget_seconds": 180, "test_budget_seconds": 900,
                             "appium_start_path": "unchanged preceding standalone workflow step"}
                   (RESULTS / "duo-startup-diagnostic.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
                   event("diagnostic-complete", **result)
               return exit_code
 
 
+          # Appended to the existing diagnostic watchdog; all output is TestResults/duo-*.
+
+          def health(stage):
+              if stage not in ("before-runtime", "preboot"):
+                  raise ValueError("Unknown health stage")
+              for name, command in (
+                  ("hardware", ["sysctl", "hw.ncpu", "hw.memsize", "hw.pagesize"]),
+                  ("cpu-memory", ["top", "-l", "1", "-n", "0"]),
+                  ("disk", ["df", "-h", "/"]),
+                  ("vm-stat", ["vm_stat"]),
+                  ("swap", ["sysctl", "vm.swapusage"]),
+                  ("runtime-images", ["xcrun", "simctl", "runtime", "list", "--json"]),
+              ):
+                  capture(command, f"duo-health-{stage}-{name}.txt", 15)
+              files = sorted(RESULTS.glob(f"duo-health-{stage}-*.txt"))
+              (RESULTS / f"duo-health-{stage}-summary.json").write_text(json.dumps({
+                  "stage": stage, "scope": "raw host observations; not an OOM determination",
+                  "files": [{"name": file.name, "bytes": file.stat().st_size} for file in files],
+              }, indent=2), encoding="utf-8")
+              event("health-stage-complete", health_stage=stage)
+              return 0
+
+
+          def prune_candidates(images, devices):
+              target = "com.apple.CoreSimulator.SimRuntime.iOS-27-0"
+              if not isinstance(images, dict) or not isinstance(devices, dict):
+                  raise ValueError("Runtime/device evidence is not an object")
+              device_map = devices.get("devices")
+              if not isinstance(device_map, dict):
+                  raise ValueError("Missing complete device-state map")
+              target_devices = device_map.get(target, [])
+              if not isinstance(target_devices, list) or any(
+                      not isinstance(device, dict) or device.get("state") != "Shutdown"
+                      for device in target_devices):
+                  raise ValueError("iOS 27.0 has a running/unknown device; refusing runtime deletion")
+              selected = []
+              for key, image in images.items():
+                  if not isinstance(image, dict):
+                      raise ValueError("Malformed runtime-image entry")
+                  if image.get("runtimeIdentifier") != target:
+                      continue
+                  if (image.get("version") != "27.0"
+                          or image.get("platformIdentifier") != "com.apple.platform.iphonesimulator"
+                          or image.get("deletable") is not True or image.get("state") != "Ready"):
+                      raise ValueError("iOS 27.0 image identity/deletability is uncertain")
+                  from uuid import UUID
+                  identifier = image.get("identifier")
+                  if not isinstance(identifier, str) or str(UUID(identifier)).upper() != identifier.upper() or key != identifier:
+                      raise ValueError("Runtime-image UUID is missing or ambiguous")
+                  selected.append(identifier)
+              return sorted(selected)
+
+
+          def prune_unused_ios27():
+              # Refuse any local or shared-purpose use; this dedicated workflow has one VM.
+              if (os.environ.get("GITHUB_ACTIONS") != "true"
+                      or os.environ.get("RUNNER_OS") != "macOS"
+                      or os.environ.get("GITHUB_JOB") != "duo-startup-diagnostic"
+                      or os.environ.get("DUO_REMOVE_UNUSED_27_0_RUNTIME") != "true"):
+                  raise ValueError("Runtime removal is allowed only in the dedicated GitHub Duo CI job")
+              RESULTS.mkdir(parents=True, exist_ok=True)
+              def command(args, filename, timeout=30):
+                  with (RESULTS / filename).open("wb") as output:
+                      process = start_owned(args, stdout=output, stderr=subprocess.STDOUT)
+                      try:
+                          code = process.wait(timeout=timeout)
+                      except subprocess.TimeoutExpired:
+                          stop_group(process, filename, grace=1)
+                          raise ValueError(f"{filename} exceeded {timeout}s")
+                      finally:
+                          stop_group(process, filename, grace=0)
+                  if code:
+                      raise ValueError(f"{filename} failed with exit {code}")
+                  return (RESULTS / filename).read_text(encoding="utf-8")
+              images = json.loads(command(["xcrun", "simctl", "runtime", "list", "--json"], "duo-prune-images-before.json"))
+              devices = json.loads(command(["xcrun", "simctl", "list", "devices", "--json"], "duo-prune-devices-before.json"))
+              selected = prune_candidates(images, devices)
+              protected = {key: (image.get("runtimeIdentifier"), image.get("version"), image.get("build"))
+                           for key, image in images.items() if key not in selected}
+              (RESULTS / "duo-prune-plan.json").write_text(json.dumps({
+                  "scope": "dedicated CI VM; only unused iOS 27.0 runtime images",
+                  "preserved": "iOS 27.1 runtime build 24A94401 and every Xcode SDK",
+                  "selected_image_uuids": selected,
+              }, indent=2), encoding="utf-8")
+              for identifier in selected:
+                  command(["xcrun", "simctl", "runtime", "delete", identifier, "--dry-run"], f"duo-prune-{identifier}-dry-run.txt")
+                  command(["xcrun", "simctl", "runtime", "delete", identifier], f"duo-prune-{identifier}-delete.txt", timeout=90)
+              # Deletion can be asynchronous; verify its result within a separate 120s budget.
+              deadline = time.monotonic() + 120
+              while True:
+                  remaining = deadline - time.monotonic()
+                  if remaining <= 0:
+                      raise ValueError("Deleted iOS 27.0 images still present after 120s")
+                  after = json.loads(command(["xcrun", "simctl", "runtime", "list", "--json"], "duo-prune-images-after.json", min(30, remaining)))
+                  if not isinstance(after, dict):
+                      raise ValueError("Invalid runtime-image readback")
+                  if not any(identifier in after for identifier in selected):
+                      for identifier, expected in protected.items():
+                          image = after.get(identifier)
+                          if not isinstance(image, dict) or (image.get("runtimeIdentifier"), image.get("version"), image.get("build")) != expected:
+                              raise ValueError("A nonselected runtime image changed; refusing to claim successful prune")
+                      event("runtime-prune-complete", removed_image_uuids=selected,
+                            changed=bool(selected))
+                      return 0
+                  time.sleep(min(2, max(0, deadline - time.monotonic())))
+
+
           if __name__ == "__main__":
+              if len(sys.argv) == 3 and sys.argv[1] == "--health":
+                  sys.exit(health(sys.argv[2]))
+              if sys.argv[1:] == ["--prune-unused-ios27"]:
+                  sys.exit(prune_unused_ios27())
+              if sys.argv[1:]:
+                  raise SystemExit("Unknown diagnostic arguments")
               sys.exit(main())
           PY
+      - name: Record health before runtime installation
+        timeout-minutes: 4
+        run: python3 "$RUNNER_TEMP/duo-startup-probe.py" --health before-runtime
+      - name: Remove only unused preinstalled iOS 27.0 runtime images (CI resource comparison)
+        if: ${{ env.DUO_REMOVE_UNUSED_27_0_RUNTIME == 'true' }}
+        timeout-minutes: 8
+        run: python3 "$RUNNER_TEMP/duo-startup-probe.py" --prune-unused-ios27
+      - name: Install exact Duo simulator runtime
+        timeout-minutes: 30
+        run: xcodebuild -downloadPlatform iOS -buildVersion 24A94401 -architectureVariant arm64
+      - name: Prepare and verify iPhone Duo
+        timeout-minutes: 5
+        run: python3 .github/workflows/scripts/prepare-duo.py --output TestResults/duo-environment.json
+      - name: Install MAUI workloads
+        timeout-minutes: 15
+        run: dotnet workload install maui-ios --from-rollback-file workloads.rollback.json
+      - name: Build Duo app with iOS 27.1 SDK
+        timeout-minutes: 20
+        run: |
+          dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64 -p:MtouchLink=SdkOnly -p:MtouchSdkVersion=27.1
+          APP="Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app"
+          SDK=$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$APP/Info.plist")
+          test "$SDK" = "iphonesimulator27.1"
+          plutil -p "$APP/Info.plist" > TestResults/duo-build-info.txt
+          xcrun vtool -show-build "$APP/ExampleAShellApp" > TestResults/duo-native-build.txt
+          python3 -c 'import re,pathlib; assert re.search(r"sdk\s+27\.1(?:\s|$)", pathlib.Path("TestResults/duo-native-build.txt").read_text()), "Native binary was not built with SDK 27.1"'
+      - name: Install Appium
+        timeout-minutes: 10
+        run: |
+          npm i -g appium
+          appium driver install xcuitest
+          appium --version > TestResults/duo-appium-version.txt
+          appium driver list --installed --json > TestResults/duo-drivers.json
+          node -e 'const p=require("path"),f=require("fs"),o=require("os"); const a=process.env.APPIUM_HOME||p.join(o.homedir(),".appium"); const q=require.resolve("appium-webdriveragent/package.json",{paths:[p.join(a,"node_modules/appium-xcuitest-driver")]}); process.stdout.write(f.readFileSync(q,"utf8"));' > TestResults/duo-wda-version.json
+      - name: Record health after runtime and app build (before boot)
+        timeout-minutes: 4
+        run: python3 "$RUNNER_TEMP/duo-startup-probe.py" --health preboot
+      - name: Upload preboot environment evidence
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: duo-preboot-environment
+          path: TestResults/duo-*
+          if-no-files-found: warn
+      - name: Boot iPhone Duo
+        timeout-minutes: 10
+        run: |
+          xcrun simctl boot "$DUO_DEVICE_UDID"
+          xcrun simctl bootstatus "$DUO_DEVICE_UDID" -b
+          xcrun simctl getenv "$DUO_DEVICE_UDID" SIMULATOR_MODEL_IDENTIFIER > TestResults/duo-model.txt
+          test "$(cat TestResults/duo-model.txt)" = "iPhone19,4"
+          xcrun simctl io "$DUO_DEVICE_UDID" enumerate > TestResults/duo-displays.txt
+      - name: Build UI test assembly (outside startup deadline)
+        timeout-minutes: 10
+        run: dotnet build Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj
+      - name: Start Appium
+        run: npx appium > appium.log 2>&1 &
+      - name: Run bounded Duo startup diagnostic
+        timeout-minutes: 22
+        env:
+          UITEST_PLATFORM: ios
+          UITEST_FORM: duo
+          UITEST_DEVICE_NAME: ${{ env.DUO_DEVICE_NAME }}
+          UITEST_DEVICE_UDID: ${{ env.DUO_DEVICE_UDID }}
+          UITEST_APP_PATH: ${{ github.workspace }}/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app
+        run: |
+          python3 "$RUNNER_TEMP/duo-startup-probe.py"
       - name: Upload startup diagnostic evidence
         if: always()
         timeout-minutes: 5
