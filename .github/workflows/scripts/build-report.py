@@ -85,6 +85,53 @@ def trx_result(artifact_dir: Path) -> dict:
 
 
 def cell_result(artifact_dir: Path, job_result: str | None = None) -> dict:
+    report = platform_result(artifact_dir, job_result)
+    if artifact_dir.name.startswith("shots-android-api"):
+        raw_theme_result(artifact_dir, report, "android-system-bars-checks.json",
+                         "verify_android_system_bars.py", "visibility_status", "Android 状态栏")
+    if ((artifact_dir.name.startswith("shots-android-api") and artifact_dir.name.endswith("-compact"))
+            or (artifact_dir.name.startswith("shots-ios") and "-compact-" in artifact_dir.name)
+            or artifact_dir.name == DUO_ARTIFACT_NAME):
+        raw_theme_result(artifact_dir, report, "landing-theme-checks.json",
+                         "verify_landing_theme.py", "color_status", "Landing page 背景、子页面图标和文字")
+    return report
+
+
+def raw_theme_result(artifact_dir: Path, report: dict, filename: str,
+                     script: str, status_key: str, label: str) -> None:
+    """汇总和下载后的原始证据均需通过；缺失深色 landing 不能显示绿灯。"""
+    def validate(checks: dict) -> None:
+        expected = {"analyses": 3, "matches": 3, "mismatches": 0, "errors": 0}
+        if any(type(checks["summary"][key]) is not int or checks["summary"][key] != value
+               for key, value in expected.items()):
+            raise ValueError("三阶段核对未全部通过")
+        results = checks["results"]
+        if (not isinstance(results, list) or len(results) != 3
+                or not isinstance(checks["errors"], list) or checks["errors"]
+                or {result["stage"] for result in results} != {"light", "dark", "light-restored"}
+                or any(result[status_key] != "match" for result in results)):
+            raise ValueError("缺少完整的浅色、深色、恢复浅色证据")
+
+    try:
+        paths = sorted(artifact_dir.rglob(filename))
+        if len(paths) != 1:
+            raise ValueError("缺少或存在多个截图核对结果")
+        validate(json.loads(paths[0].read_text(encoding="utf-8-sig")))
+        verifier = Path(__file__).resolve().parents[3] / "Tests/AdaptiveShell.UITests/Scripts" / script
+        verified = subprocess.run([sys.executable, str(verifier), str(artifact_dir), "--strict"],
+                                  capture_output=True, text=True, timeout=60)
+        if verified.returncode != 0:
+            raise ValueError("下载后的原始截图、原生坐标或导航证据未通过重新核对")
+        validate(json.loads(verified.stdout))
+        detail = f"{label}：3/3 通过（浅色、深色、恢复浅色）"
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired) as error:
+        report["result"] = "failure"
+        detail = f"{label}：未通过；{error}"
+    previous = report.get("appearance_detail", "")
+    report["appearance_detail"] = (previous + "；" if previous else "") + detail
+
+
+def platform_result(artifact_dir: Path, job_result: str | None = None) -> dict:
     report = trx_result(artifact_dir)
     if artifact_dir.name == DUO_ARTIFACT_NAME:
         return duo_result(artifact_dir, report, job_result)
