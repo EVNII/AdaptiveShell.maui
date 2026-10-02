@@ -5,9 +5,8 @@ Usage: verify_landing_theme.py ARTIFACT_ROOT --strict
 Android native AX/API bounds are screen pixels, accepted only when the session
 window size equals the unmodified PNG dimensions. iOS independently matches
 each PNG and application AX frame to one real /wda/screens entry using the
-actual runtime version. Legacy iOS18/26/27.0 bounds must equal AX points,
-then PNG equals native bounds multiplied by reported scale. Observed Duo27.1
-bounds must equal PNG pixels, and AX points multiplied by reported scale.
+actual runtime version. WDA bounds must equal original PNG pixels, and
+Application AX points multiplied by the independently reported native scale.
 No contract is selected from image ratios; unknown runtimes fail.
 
 The iOS screenInfo fields are serialized unchanged by WDA16.12.11 FBScreen.m:
@@ -317,6 +316,95 @@ def analyze(root, stage, PNG):
             "checks": {"page_background": background, "rows": checks}, "rows": checks}
 
 
+def navigation_mapping(source, platform, dark, png):
+    if [png.width, png.height] != dark["png_size"]:
+        raise ValueError("Original dark navigation screenshots changed display dimensions")
+    if platform == "android":
+        windows = [node for node in source if node.get("package") == BUNDLE
+                   and node.get("displayed") == "true"]
+        if len(windows) != 1:
+            raise ValueError("Navigation requires one native application window")
+        window = xml_frame(windows[0], platform)
+        if rectangle(window, 1, png) != (0, 0, png.width, png.height):
+            raise ValueError("Navigation AX window does not match the verified screen-pixel contract")
+        return 1, windows[0]
+    apps = [node for node in source.iter() if node.tag == "XCUIElementTypeApplication"
+            and node.get("visible") == "true"]
+    if len(apps) != 1 or apps[0].get("bundleId") not in (None, BUNDLE):
+        raise ValueError("Navigation requires one visible native application")
+    if xml_frame(apps[0], platform) != dark["mapping"]["application"]:
+        raise ValueError("Navigation Application frame differs from the independently verified dark display")
+    scale = dark["mapping"]["screen"]["scale"]
+    if rectangle(xml_frame(apps[0], platform), scale, png) != (0, 0, png.width, png.height):
+        raise ValueError("Navigation AX and PNG do not match the verified native screen scale")
+    return scale, apps[0]
+
+
+def child_background(source, platform, scale, png, counter):
+    # Locate the real shared page container of the sample image and clicked
+    # button. Exclude their native frames, whose authored colors are not the
+    # page background; do not infer a crop from image colors or screen ratios.
+    description = "dot net bot in a submarine number ten"
+    images = [node for node in source.iter()
+              if node.tag in ("android.widget.ImageView", "XCUIElementTypeImage")
+              and node.get("visible", node.get("displayed", "true")) == "true"
+              and description in (node.get("content-desc"), node.get("label"), node.get("name"))]
+    if len(images) != 1:
+        raise ValueError("The clicked child requires one visible native sample image")
+    image = images[0]
+    parents = {child: node for node in source.iter() for child in node}
+    ancestors, current = set(), counter
+    while current in parents:
+        current = parents[current]
+        ancestors.add(current)
+    body = image
+    while body not in ancestors:
+        if body not in parents:
+            raise ValueError("Child image and counter have no shared native page container")
+        body = parents[body]
+    actual = xml_frame(body, platform)
+    excluded = []
+    for node in (image, counter):
+        native = xml_frame(node, platform)
+        if not contains(actual, native):
+            raise ValueError("Child content is outside its actual native page container")
+        excluded.append(rectangle(native, scale, png))
+    rect = rectangle(actual, scale, png)
+    return {"native_frame": actual, "pixel_rectangle": rect,
+            "excluded_native_content_rectangles": excluded,
+            "background": check_background(png, rect, EXPECTED_BG["dark"], excluded)}
+
+
+def returned_appearance(source, platform, scale, png):
+    parents = {child: node for node in source.iter() for child in node}
+    body = marker(source, BODY, platform)
+    rows = {row: marker(source, row, platform) for row in ROWS}
+    actual = xml_frame(body, platform)
+    rects = {row: rectangle(xml_frame(node, platform), scale, png) for row, node in rows.items()}
+    checks = {}
+    for row, node in rows.items():
+        row_frame = xml_frame(node, platform)
+        if not contains(actual, row_frame) or not inside_tree(node, body, parents):
+            raise ValueError("Returned landing row is outside its actual native page body")
+        children = {suffix: marker(source, row + suffix, platform) for suffix in ("-icon", "-title")}
+        child_rects = {}
+        for suffix, child in children.items():
+            native = xml_frame(child, platform)
+            if not contains(row_frame, native) or not inside_tree(child, node, parents):
+                raise ValueError("Returned landing icon/title is outside its native row")
+            child_rects[suffix] = rectangle(native, scale, png)
+        expected = "音乐" if row == "landing-music" else "相册"
+        if expected not in [children["-title"].get(key) for key in ("text", "label", "value")]:
+            raise Mismatch("Returned landing lacks its actual child title")
+        background = check_background(png, rects[row], EXPECTED_BG["dark"], child_rects.values())
+        checks[row] = {"background": background,
+                       "icon": check_foreground(png, child_rects["-icon"], background["rgb"], 3),
+                       "title": check_foreground(png, child_rects["-title"], background["rgb"], 4.5),
+                       "readable_label": expected}
+    return {"page_background": check_background(png, rectangle(actual, scale, png),
+                                                EXPECTED_BG["dark"], rects.values()), "rows": checks}
+
+
 def verify_navigation(root, results, PNG):
     data = read_json(unique(root, "landing-navigation.json"))
     children = data.get("children")
@@ -325,6 +413,7 @@ def verify_navigation(root, results, PNG):
     if {value.get("child") for value in children} != {"music", "photos"}:
         raise Mismatch("Dark navigation must visit Music and Photos exactly once")
     platform = results[0]["platform"]
+    verified = {**data, "children": []}
     for entry in children:
         name = entry["child"]
         if entry.get("returned_to_landing") is not True:
@@ -333,22 +422,24 @@ def verify_navigation(root, results, PNG):
         if not isinstance(before, str) or not isinstance(after, str) or not after.strip() or before == after:
             raise Mismatch(f"No actual dark {name} child counter state change")
         child = ET.parse(unique(root, f"landing-dark-{name}-child.xml")).getroot()
+        sequence = 43 if name == "music" else 45
+        child_png = PNG(unique(root, f"{sequence:02}-landing-dark-{name}-child-clicked.png"))
+        child_scale, child = navigation_mapping(child, platform, results[1], child_png)
         counter = marker(child, "counterBtn", platform)
         if after not in [counter.get(key) for key in ("text", "label", "value")]:
             raise Mismatch(f"{name} child AX does not contain its recorded changed counter text")
         returned = ET.parse(unique(root, f"landing-dark-{name}-returned.xml")).getroot()
+        return_png = PNG(unique(root, f"{sequence + 1:02}-landing-dark-{name}-returned.png"))
+        return_scale, returned = navigation_mapping(returned, platform, results[1], return_png)
         for row in ROWS:
             marker(returned, row, platform)
         if any(matches_id(node, "counterBtn") and node.get("visible", node.get("displayed", "true")) == "true"
                for node in returned.iter()):
             raise Mismatch(f"Back from {name} did not return to the landing page")
-        sequence = 43 if name == "music" else 45
-        for filename in (f"{sequence:02}-landing-dark-{name}-child-clicked.png",
-                         f"{sequence + 1:02}-landing-dark-{name}-returned.png"):
-            image = PNG(unique(root, filename), decode_pixels=False)
-            if [image.width, image.height] != results[1]["png_size"]:
-                raise ValueError("Original dark navigation screenshots changed display dimensions")
-    return data
+        verified["children"].append({**entry,
+            "child_dark_appearance": child_background(child, platform, child_scale, child_png, counter),
+            "returned_dark_appearance": returned_appearance(returned, platform, return_scale, return_png)})
+    return verified
 
 
 def main():

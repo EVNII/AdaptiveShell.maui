@@ -23,6 +23,15 @@ JOB_LABELS = {
 }
 DUO_ARTIFACT_NAME = "shots-ios27.1-duo-iPhoneDuo"
 DUO_JOB_KEY = "uitest-ios-27-1-duo"
+LANDING_SHOT_LABELS = {
+    "40-landing-theme-light": "Landing page · 浅色",
+    "41-landing-theme-dark": "Landing page · 深色",
+    "42-landing-theme-light-restored": "Landing page · 恢复浅色",
+    "43-landing-dark-music-child-clicked": "深色 · 音乐子页面（已点击）",
+    "44-landing-dark-music-returned": "深色 · 从音乐返回 Landing page",
+    "45-landing-dark-photos-child-clicked": "深色 · 相册子页面（已点击）",
+    "46-landing-dark-photos-returned": "深色 · 从相册返回 Landing page",
+}
 
 
 def trx_result(artifact_dir: Path) -> dict:
@@ -93,7 +102,7 @@ def cell_result(artifact_dir: Path, job_result: str | None = None) -> dict:
             or (artifact_dir.name.startswith("shots-ios") and "-compact-" in artifact_dir.name)
             or artifact_dir.name == DUO_ARTIFACT_NAME):
         raw_theme_result(artifact_dir, report, "landing-theme-checks.json",
-                         "verify_landing_theme.py", "color_status", "Landing page 背景、子页面图标和文字")
+                         "verify_landing_theme.py", "color_status", "Landing page 背景、入口图标、文字和深色子页面")
     return report
 
 
@@ -328,10 +337,14 @@ def main() -> None:
             html_parts.append(f"<p>{html.escape(report['appearance_detail'])}</p>")
         for png in pngs:
             rel = png.relative_to(root).as_posix()
-            label = html.escape(png.stem)
+            label = html.escape(LANDING_SHOT_LABELS.get(png.stem, png.stem))
             md.append(f"![{label}]({rel})")
-            html_parts.append(
-                f"<a href='{rel}'><img src='{rel}' alt='{label}' title='{label}'></a>")
+            picture = f"<a href='{rel}'><img src='{rel}' alt='{label}' title='{label}'></a>"
+            if png.stem in LANDING_SHOT_LABELS:
+                html_parts.append(f"<figure style='display:inline-block;vertical-align:top;margin:4px;max-width:320px'>"
+                                  f"{picture}<figcaption>{label}</figcaption></figure>")
+            else:
+                html_parts.append(picture)
         md.append("")
         html_parts.append("</section>")
 

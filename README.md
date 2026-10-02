@@ -93,7 +93,7 @@ Android also reads back native night mode; the locked API29 CI image uses an exp
 
 Android theme tests also require Python 3 to verify status-bar foreground contrast from three original screenshots and native `mobile:getSystemBars` frames. Missing evidence or invisible status-bar foreground fails the theme test.
 
-`LandingPageDarkModeTests` keeps the group landing page open through light, dark, and restored light appearance. On Android compact and iOS compact/Duo it checks the page background, both SVG icons and titles from original screenshots and native accessibility bounds, then opens both children, clicks their counters, and returns using the native Back affordance. Python 3 is required; missing captures or invisible icons fail the test and report. Sidebar, drawer, and direct-leaf layouts have no dedicated landing page and explicitly skip this test.
+`LandingPageDarkModeTests` keeps the group landing page open through light, dark, and restored light appearance. On Android compact and iOS compact/Duo it checks the page background, both SVG icons and titles from original screenshots and native accessibility bounds, then opens both children, clicks their counters, and returns using the native Back affordance. It also verifies both child backgrounds and the returned landing page backgrounds, icons, and titles from the dark captures. Python 3 is required; missing captures or invisible icons fail the test and report. Sidebar, drawer, and direct-leaf layouts have no dedicated landing page and explicitly skip this test.
 
 CI (`.github/workflows/uitest.yml`) runs Android (phone + tablet emulator matrix), iOS and Windows on every push/PR; Mac Catalyst runs locally only.
 
