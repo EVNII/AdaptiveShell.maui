@@ -166,7 +166,7 @@ jobs:
           xcrun simctl boot "${{ matrix.udid }}" || true
           xcrun simctl bootstatus "${{ matrix.udid }}" -b
       - name: Start Appium
-        run: npx appium > appium.log 2>&1 &
+        run: npx appium --keep-alive-timeout 900 > appium.log 2>&1 &
       - name: Run UI tests
         run: |
           until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
@@ -219,7 +219,7 @@ jobs:
           xcrun simctl boot "${{ matrix.udid }}" || true
           xcrun simctl bootstatus "${{ matrix.udid }}" -b
       - name: Start Appium
-        run: npx appium > appium.log 2>&1 &
+        run: npx appium --keep-alive-timeout 900 > appium.log 2>&1 &
       - name: Run UI tests
         run: |
           until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
@@ -273,7 +273,7 @@ jobs:
           xcrun simctl boot "${{ matrix.udid }}" || true
           xcrun simctl bootstatus "${{ matrix.udid }}" -b
       - name: Start Appium
-        run: npx appium > appium.log 2>&1 &
+        run: npx appium --keep-alive-timeout 900 > appium.log 2>&1 &
       - name: Run UI tests
         run: |
           until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done

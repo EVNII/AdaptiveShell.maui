@@ -83,11 +83,12 @@ def start():
         raise RuntimeError("Installed global Appium executable was not found")
     if PROCESS.exists():
         raise RuntimeError("Appium process metadata already exists; refusing a second server")
+    server_command = [command, "--keep-alive-timeout", "900"]
     with Path("appium.log").open("wb") as log:
         process = subprocess.Popen(
-            [command], stdin=subprocess.DEVNULL, stdout=log,
+            server_command, stdin=subprocess.DEVNULL, stdout=log,
             stderr=subprocess.STDOUT, start_new_session=True)
-    save(PROCESS, {"pid": process.pid, "command": [command], "log": "appium.log",
+    save(PROCESS, {"pid": process.pid, "command": server_command, "log": "appium.log",
                    "start_new_session": True, "created_at_unix": time.time()})
     return wait_ready("preboot", process=process)
 

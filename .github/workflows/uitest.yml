@@ -160,7 +160,7 @@ jobs:
 
       - name: Run UI tests
         run: |
-          npx appium > appium.log 2>&1 &
+          npx appium --keep-alive-timeout 900 --default-capabilities '{"appium:showXcodeLog":true}' > appium.log 2>&1 &
           export UITEST_PLATFORM=ios UITEST_FORM=compact
           export UITEST_DEVICE_NAME="iPhone 16" UITEST_DEVICE_UDID="$UDID"
           export UITEST_APP_PATH="$GITHUB_WORKSPACE/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app"
