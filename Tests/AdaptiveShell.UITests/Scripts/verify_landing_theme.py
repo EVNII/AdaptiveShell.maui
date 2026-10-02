@@ -345,7 +345,7 @@ def verify_navigation(root, results, PNG):
         sequence = 43 if name == "music" else 45
         for filename in (f"{sequence:02}-landing-dark-{name}-child-clicked.png",
                          f"{sequence + 1:02}-landing-dark-{name}-returned.png"):
-            image = PNG(unique(root, filename))
+            image = PNG(unique(root, filename), decode_pixels=False)
             if [image.width, image.height] != results[1]["png_size"]:
                 raise ValueError("Original dark navigation screenshots changed display dimensions")
     return data

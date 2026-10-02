@@ -1,4 +1,4 @@
-name: Landing dark complete-suite diagnostic
+name: Android 29 theme readback complete-suite diagnostic
 
 on:
   workflow_dispatch:
@@ -10,35 +10,6 @@ env:
   DOTNET_NOLOGO: true
 
 jobs:
-  build-ios-app:
-    # 用 macos-15:macos-26 镜像当前的 workload manifest 只提供 iOS 26.0/27.0 pack,
-    # 不认识 net10.0-ios26.5(NETSDK1140);macos-15 上验证过可构建
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-      - name: Select latest Xcode
-        run: |
-          XCODE_APP="$(for app in /Applications/Xcode*.app; do realpath "$app"; done | sort -uV | tail -1)"
-          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
-          sudo xcodebuild -license accept || true
-          xcodebuild -runFirstLaunch
-      - name: Install MAUI workloads
-        run: dotnet workload install maui-ios --from-rollback-file workloads.rollback.json
-      - name: Build example app (iOS)
-        # runner 最新 Xcode 的 SDK 可能低于 ios26.5 pack 要求,SdkOnly 链接绕过 MT0180
-        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64 -p:MtouchLink=SdkOnly
-      - name: Zip .app
-        # upload-artifact 不保留 .app 内的符号链接/权限,必须先打包
-        run: ditto -c -k --sequesterRsrc --keepParent Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app ExampleAShellApp.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ios-app
-          path: ExampleAShellApp.zip
-          retention-days: 3
-
   build-android-apk:
     runs-on: ubuntu-latest
     steps:
@@ -57,210 +28,6 @@ jobs:
           path: Example/ExampleAShellApp/bin/Debug/net10.0-android/com.companyname.exampleashellapp-Signed.apk
           retention-days: 3
 
-  prepare-ios-18:
-    runs-on: macos-15
-    outputs:
-      matrix: ${{ steps.devices.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: devices
-        env:
-          TARGET_MAJOR: '18'
-        run: |
-          MATRIX=$(python3 .github/workflows/scripts/discover-simulators.py "$TARGET_MAJOR" | python3 -c 'import json,sys; rows=[r for r in json.load(sys.stdin)["include"] if r["form"]=="compact"]; assert len(rows)==1, "One real compact iPhone is required"; print(json.dumps({"include":rows},separators=(",",":")))')
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-
-  prepare-ios-26:
-    runs-on: macos-26
-    outputs:
-      matrix: ${{ steps.devices.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: devices
-        env:
-          TARGET_MAJOR: '26'
-        run: |
-          MATRIX=$(python3 .github/workflows/scripts/discover-simulators.py "$TARGET_MAJOR" | python3 -c 'import json,sys; rows=[r for r in json.load(sys.stdin)["include"] if r["form"]=="compact"]; assert len(rows)==1, "One real compact iPhone is required"; print(json.dumps({"include":rows},separators=(",",":")))')
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-
-  prepare-ios-27:
-    runs-on: xcode-27
-    outputs:
-      matrix: ${{ steps.devices.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: devices
-        env:
-          TARGET_MAJOR: '27'
-        run: |
-          MATRIX=$(python3 .github/workflows/scripts/discover-simulators.py "$TARGET_MAJOR" | python3 -c 'import json,sys; rows=[r for r in json.load(sys.stdin)["include"] if r["form"]=="compact"]; assert len(rows)==1, "One real compact iPhone is required"; print(json.dumps({"include":rows},separators=(",",":")))')
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-
-  uitest-ios-18:
-    needs: [build-ios-app, prepare-ios-18]
-    runs-on: macos-15
-    if: ${{ needs.prepare-ios-18.outputs.matrix != '' && needs.prepare-ios-18.outputs.matrix != '{"include":[]}' }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare-ios-18.outputs.matrix) }}
-    name: uitest-ios (18, ${{ matrix.device }})
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Install Appium
-        run: |
-          npm i -g appium
-          appium driver install xcuitest
-      - uses: actions/download-artifact@v4
-        with:
-          name: ios-app
-          path: app
-      - name: Unzip .app
-        run: ditto -x -k app/ExampleAShellApp.zip app/
-      - name: Boot simulator
-        run: |
-          xcrun simctl boot "${{ matrix.udid }}" || true
-          xcrun simctl bootstatus "${{ matrix.udid }}" -b
-      - name: Start Appium
-        run: npx appium > appium.log 2>&1 &
-      - name: Run UI tests
-        timeout-minutes: 20
-        run: |
-          until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
-          UITEST_PLATFORM=ios UITEST_FORM=${{ matrix.form }} \
-          UITEST_DEVICE_NAME="${{ matrix.device }}" UITEST_DEVICE_UDID="${{ matrix.udid }}" \
-          UITEST_APP_PATH="$GITHUB_WORKSPACE/app/ExampleAShellApp.app" \
-            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
-      - name: Upload shots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: shots-ios18-${{ matrix.form }}-${{ matrix.device }}
-          path: |
-            TestResults/shots
-            TestResults/screenshots
-            TestResults/*.trx
-            TestResults/landing-*.xml
-            TestResults/landing-*.json
-            appium.log
-          if-no-files-found: ignore
-
-  uitest-ios-26:
-    needs: [build-ios-app, prepare-ios-26]
-    runs-on: macos-26
-    if: ${{ needs.prepare-ios-26.outputs.matrix != '' && needs.prepare-ios-26.outputs.matrix != '{"include":[]}' }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare-ios-26.outputs.matrix) }}
-    name: uitest-ios (26, ${{ matrix.device }})
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Install Appium
-        run: |
-          npm i -g appium
-          appium driver install xcuitest
-      - uses: actions/download-artifact@v4
-        with:
-          name: ios-app
-          path: app
-      - name: Unzip .app
-        run: ditto -x -k app/ExampleAShellApp.zip app/
-      - name: Boot simulator
-        run: |
-          xcrun simctl boot "${{ matrix.udid }}" || true
-          xcrun simctl bootstatus "${{ matrix.udid }}" -b
-      - name: Start Appium
-        run: npx appium > appium.log 2>&1 &
-      - name: Run UI tests
-        timeout-minutes: 20
-        run: |
-          until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
-          UITEST_PLATFORM=ios UITEST_FORM=${{ matrix.form }} \
-          UITEST_DEVICE_NAME="${{ matrix.device }}" UITEST_DEVICE_UDID="${{ matrix.udid }}" \
-          UITEST_APP_PATH="$GITHUB_WORKSPACE/app/ExampleAShellApp.app" \
-            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
-      - name: Upload shots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: shots-ios26-${{ matrix.form }}-${{ matrix.device }}
-          path: |
-            TestResults/shots
-            TestResults/screenshots
-            TestResults/*.trx
-            TestResults/landing-*.xml
-            TestResults/landing-*.json
-            appium.log
-          if-no-files-found: ignore
-
-  uitest-ios-27:
-    needs: [build-ios-app, prepare-ios-27]
-    runs-on: xcode-27
-    # 预览镜像的设备名单动态发现,已发现的设备同样参与发布门禁。
-    if: ${{ needs.prepare-ios-27.outputs.matrix != '' && needs.prepare-ios-27.outputs.matrix != '{"include":[]}' }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare-ios-27.outputs.matrix) }}
-    name: uitest-ios (27, ${{ matrix.device }}) [experimental]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Install Appium
-        run: |
-          npm i -g appium
-          appium driver install xcuitest
-      - uses: actions/download-artifact@v4
-        with:
-          name: ios-app
-          path: app
-      - name: Unzip .app
-        run: ditto -x -k app/ExampleAShellApp.zip app/
-      - name: Boot simulator
-        run: |
-          xcrun simctl boot "${{ matrix.udid }}" || true
-          xcrun simctl bootstatus "${{ matrix.udid }}" -b
-      - name: Start Appium
-        run: npx appium > appium.log 2>&1 &
-      - name: Run UI tests
-        timeout-minutes: 20
-        run: |
-          until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
-          UITEST_PLATFORM=ios UITEST_FORM=${{ matrix.form }} \
-          UITEST_DEVICE_NAME="${{ matrix.device }}" UITEST_DEVICE_UDID="${{ matrix.udid }}" \
-          UITEST_APP_PATH="$GITHUB_WORKSPACE/app/ExampleAShellApp.app" \
-            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
-      - name: Upload shots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: shots-ios27-${{ matrix.form }}-${{ matrix.device }}
-          path: |
-            TestResults/shots
-            TestResults/screenshots
-            TestResults/*.trx
-            TestResults/landing-*.xml
-            TestResults/landing-*.json
-            appium.log
-          if-no-files-found: ignore
-
-  # Duo requires Xcode/iOS 27.1 specifically; newer 27.2 does not replace its runtime.
-
   uitest-android:
     needs: build-android-apk
     runs-on: ubuntu-latest
@@ -269,7 +36,7 @@ jobs:
       matrix:
         # Appium UiAutomator2 只支持 Android 8.0(API 26)+,23-25 无法驱动;
         # form 轴与 include 按共享 key 合并:compact->pixel_6,wide->pixel_tablet
-        api: [26, 36]
+        api: [29]
         form: [compact]
         include:
           - form: compact
@@ -336,6 +103,7 @@ jobs:
             TestResults/*.trx
             TestResults/landing-*.xml
             TestResults/landing-*.json
+            TestResults/android-theme-*.json
             TestResults/android-*.json
             appium.log
           if-no-files-found: ignore

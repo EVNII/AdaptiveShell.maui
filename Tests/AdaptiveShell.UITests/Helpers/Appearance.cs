@@ -20,9 +20,30 @@ public static class Appearance
         switch (AppiumSetup.Platform)
         {
             case "android":
-                Run(AdbPath(),
-                    "-s", DeviceSerial(), "shell", "cmd", "uimode", "night", dark ? "yes" : "no");
+            {
+                var adb = AdbPath();
+                var device = DeviceSerial();
+                var expected = dark ? "yes" : "no";
+                var setter = Run(adb, "-s", device, "shell", "cmd", "uimode", "night", expected);
+                var actual = Run(adb, "-s", device, "shell", "cmd", "uimode", "night").Trim();
+                var evidence = new
+                {
+                    requested = expected, setter_output = setter, actual,
+                    setup_complete = Run(adb, "-s", device, "shell", "settings", "get", "secure", "user_setup_complete").Trim(),
+                    device_provisioned = Run(adb, "-s", device, "shell", "settings", "get", "global", "device_provisioned").Trim(),
+                    uimode_service = Run(adb, "-s", device, "shell", "dumpsys", "uimode"),
+                    activity_configuration = Run(adb, "-s", device, "shell", "am", "get-config"),
+                };
+                var json = System.Text.Json.JsonSerializer.Serialize(evidence,
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                var results = Path.Combine(AppiumSetup.RepoRoot, "TestResults");
+                Directory.CreateDirectory(results);
+                File.WriteAllText(Path.Combine(results, $"android-theme-command-{DateTime.UtcNow.Ticks}-{expected}.json"), json);
+                Console.WriteLine(json);
+                if (actual != $"Night mode: {expected}")
+                    throw new InvalidOperationException($"Android system night mode was '{actual}', expected '{expected}'.");
                 break;
+            }
             case "ios":
             {
                 // CI 上 simctl 与模拟器服务的通信有时超过 30s。仍要求命令成功,
