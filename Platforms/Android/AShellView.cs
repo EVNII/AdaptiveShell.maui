@@ -960,7 +960,7 @@ namespace AdaptiveShell.Platforms.Android
                 }
             }
 
-            var selected = _virtualView.GetEffectiveSelectedItemColor();
+            var selected = _virtualView.GetEffectiveSelectedItemColor(_isNight);
             var unselected = _virtualView.GetEffectiveUnselectedItemColor();
             int selectedInt = selected?.ToPlatform()
                 ?? ResolveThemeColor(_context, onSurface,

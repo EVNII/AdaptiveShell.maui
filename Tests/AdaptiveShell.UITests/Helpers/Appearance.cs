@@ -10,6 +10,8 @@ namespace AdaptiveShell.UITests;
 /// </summary>
 public static class Appearance
 {
+    static readonly TimeSpan IosAppearanceTimeout = TimeSpan.FromMinutes(2);
+
     public static void SetDark(bool dark)
     {
         switch (AppiumSetup.Platform)
@@ -19,9 +21,23 @@ public static class Appearance
                     "-s", DeviceSerial(), "shell", "cmd", "uimode", "night", dark ? "yes" : "no");
                 break;
             case "ios":
-                Run("xcrun",
-                    "simctl", "ui", DeviceSerial(), "appearance", dark ? "dark" : "light");
+            {
+                // CI 上 simctl 与模拟器服务的通信有时超过 30s。仍要求命令成功,
+                // 并回读系统实际外观,避免超时放宽后把未生效的切换当成通过。
+                var expected = dark ? "dark" : "light";
+                var device = DeviceSerial();
+                Run("xcrun", IosAppearanceTimeout,
+                    "simctl", "ui", device, "appearance", expected);
+                var actual = Run("xcrun", IosAppearanceTimeout,
+                    "simctl", "ui", device, "appearance").Trim();
+                if (actual != expected)
+                {
+                    throw new InvalidOperationException(
+                        $"Simulator appearance was '{actual}', expected '{expected}'.");
+                }
+                Console.WriteLine($"Simulator appearance confirmed: {actual}");
                 break;
+            }
             case "windows":
                 Run("reg",
                     @"add", @"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize",
@@ -67,7 +83,10 @@ public static class Appearance
         return "adb";
     }
 
-    static void Run(string fileName, params string[] args)
+    static string Run(string fileName, params string[] args) =>
+        Run(fileName, TimeSpan.FromSeconds(30), args);
+
+    static string Run(string fileName, TimeSpan timeout, params string[] args)
     {
         var psi = new ProcessStartInfo(fileName)
         {
@@ -82,17 +101,28 @@ public static class Appearance
 
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException($"Failed to start {fileName}");
-        if (!process.WaitForExit(30000))
+        // 同时消费两个管道,防止输出缓冲区填满后子进程无法退出。
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit((int)timeout.TotalMilliseconds))
         {
-            try { process.Kill(); } catch { /* 已退出则忽略 */ }
+            try
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+            catch (InvalidOperationException) { /* 已退出则忽略 */ }
             throw new InvalidOperationException(
-                $"{fileName} {string.Join(' ', args)} timed out after 30s");
+                $"{fileName} {string.Join(' ', args)} timed out after {timeout.TotalSeconds:0}s");
         }
+        var output = stdout.GetAwaiter().GetResult();
+        var error = stderr.GetAwaiter().GetResult();
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException(
                 $"{fileName} {string.Join(' ', args)} -> exit {process.ExitCode}: " +
-                process.StandardError.ReadToEnd());
+                error);
         }
+        return output;
     }
 }

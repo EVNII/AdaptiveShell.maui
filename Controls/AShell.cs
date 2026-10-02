@@ -83,8 +83,10 @@ namespace AdaptiveShell.Controls
             set { SetValue(UnselectedItemColorProperty, value); }
         }
 
-        internal Color? GetEffectiveSelectedItemColor() =>
-            SelectedItemColor ?? FindAppResourceColor("Primary");
+        internal Color? GetEffectiveSelectedItemColor(bool useDarkDefault = false) =>
+            SelectedItemColor
+            ?? (useDarkDefault ? FindAppResourceColor("PrimaryDark") : null)
+            ?? FindAppResourceColor("Primary");
 
         internal Color? GetEffectiveUnselectedItemColor() =>
             UnselectedItemColor;
