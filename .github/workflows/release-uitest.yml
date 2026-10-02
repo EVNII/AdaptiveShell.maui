@@ -400,6 +400,8 @@ jobs:
           $env:UITEST_PLATFORM = "windows"
           $env:UITEST_APP_PATH = $exe.FullName
           dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+      - name: Verify rendered Windows theme and icons
+        run: python Tests/AdaptiveShell.UITests/Scripts/verify_windows_theme.py TestResults --strict > TestResults/windows-theme.json
       - name: Upload shots
         if: always()
         uses: actions/upload-artifact@v4
@@ -409,6 +411,8 @@ jobs:
             TestResults/shots
             TestResults/screenshots
             TestResults/*.trx
+            TestResults/windows-*.xml
+            TestResults/windows-*.json
             appium.log
           if-no-files-found: ignore
 

@@ -7,6 +7,7 @@
 import html
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from xml.etree import ElementTree
@@ -82,6 +83,8 @@ def trx_result(artifact_dir: Path) -> dict:
 
 def cell_result(artifact_dir: Path, job_result: str | None = None) -> dict:
     report = trx_result(artifact_dir)
+    if artifact_dir.name == "shots-windows":
+        return windows_result(artifact_dir, report, job_result)
     if artifact_dir.name != "shots-maccatalyst":
         return report
 
@@ -118,6 +121,47 @@ def cell_result(artifact_dir: Path, job_result: str | None = None) -> dict:
     return report
 
 
+def windows_result(artifact_dir: Path, report: dict, job_result: str | None) -> dict:
+    # 原生导航变色并不证明 MAUI 页面已跟随主题;同时核对背景、按钮及图标。
+    checks = sorted(artifact_dir.rglob("windows-theme.json"))
+    try:
+        if len(checks) != 1:
+            raise ValueError("缺少或存在多个 Windows 主题截图核对结果")
+        theme = json.loads(checks[0].read_text(encoding="utf-8-sig"))
+        summary = theme["summary"]
+        expected = {"analyses": 3, "matches": 3, "mismatches": 0, "errors": 0}
+        if any(type(summary[key]) is not int or summary[key] != value
+               for key, value in expected.items()):
+            raise ValueError("Windows 主题截图核对未完整通过 3 个阶段")
+        results = theme["results"]
+        if (len(results) != 3 or theme["errors"]
+                or {result["stage"] for result in results} != {"light", "dark", "light-restored"}
+                or any(result["color_status"] != "match" for result in results)):
+            raise ValueError("缺少完整的浅色、深色、恢复浅色截图证据")
+        for result in results:
+            visual = result["checks"]
+            if (visual["page_background"]["status"] != "match"
+                    or visual["counter_button_background"]["status"] != "match"
+                    or set(visual["navigation_icons"]) != {"home", "home2", "media"}
+                    or any(icon["status"] != "match" for icon in visual["navigation_icons"].values())):
+                raise ValueError("页面背景、按钮或导航图标未通过截图核对")
+        # 下载后的原始证据再核对一次;只有成功 JSON、截图缺失也不能显示绿灯。
+        verifier = Path(__file__).resolve().parents[3] / "Tests/AdaptiveShell.UITests/Scripts/verify_windows_theme.py"
+        verified = subprocess.run([sys.executable, str(verifier), str(artifact_dir), "--strict"],
+                                  capture_output=True, text=True, timeout=60)
+        if verified.returncode != 0:
+            raise ValueError("下载后的 Windows 原始截图或坐标未通过重新核对")
+        report["appearance_detail"] = "Windows 主题：3/3 通过（浅色、深色、恢复浅色；背景、按钮、导航图标）"
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired) as error:
+        report["result"] = "failure"
+        report["appearance_detail"] = f"Windows 主题：未通过；{error}"
+    if job_result != "success":
+        report["result"] = "failure"
+        previous = report["detail"]
+        report["detail"] = (previous + "；" if previous else "") + f"Windows E2E job 为 {job_result}，完整门禁未通过"
+    return report
+
+
 def main() -> None:
     root = Path(sys.argv[1])
     shots_root = root / "shots"
@@ -132,8 +176,9 @@ def main() -> None:
             if not artifact_dir.is_dir():
                 continue
             pngs = sorted(artifact_dir.rglob("*.png"))
-            mac_job = needs.get("uitest-maccatalyst", {}).get("result")
-            cells[artifact_dir.name] = (pngs, cell_result(artifact_dir, mac_job))
+            job_key = "uitest-windows" if artifact_dir.name == "shots-windows" else "uitest-maccatalyst"
+            job_result = needs.get(job_key, {}).get("result")
+            cells[artifact_dir.name] = (pngs, cell_result(artifact_dir, job_result))
 
     md = ["# AdaptiveShell E2E 报告", "",
           f"- 运行: {run_url}", f"- commit: `{sha}`", "", "## Job 状态", ""]
