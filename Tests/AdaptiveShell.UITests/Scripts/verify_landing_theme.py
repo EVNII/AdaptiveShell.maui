@@ -12,8 +12,9 @@ No contract is selected from image ratios; unknown runtimes fail.
 
 The iOS screenInfo fields are serialized unchanged by WDA16.12.11 FBScreen.m:
 https://github.com/appium/WebDriverAgent/blob/v16.12.11/WebDriverAgentLib/Utilities/FBScreen.m#L25-L38
-Its pixel contract was observed on Duo27.1; other runtimes must supply their
-own matching original evidence. This does not test folding or identify icon art.
+Its pixel contract was observed on iOS18.6, iOS26.5, iOS27.0 and Duo27.1. Each runtime
+must independently prove the same native-screen/PNG/AX relationship from its
+own original captures. This does not test folding or identify icon art.
 """
 import argparse
 from collections import Counter
@@ -153,31 +154,29 @@ def ios_mapping(root, stage, source, png, metadata):
     capability_version = metadata.get("platform_version")
     if capability_version is not None and version(capability_version) != observed:
         raise ValueError("Driver platformVersion disagrees with actual WDA operating-system version")
-    if observed[:2] == (27, 1):
-        unit = "pixels"
-    elif observed[0] in (18, 26) or observed[:2] == (27, 0):
-        unit = "points"
-    else:
-        raise ValueError("No established native screenInfo coordinate contract for this iOS runtime")
+    if not (observed[0] in (18, 26) or observed[:2] in ((27, 0), (27, 1))):
+        raise ValueError("This iOS runtime is outside the tested matrix")
     if metadata["form"] == "duo" and observed[:2] != (27, 1):
         raise ValueError("Duo must use the actual pinned27.1 runtime")
     png_matches = [value for value in values
-                   if abs(png.width - value["bounds"]["width"] * (value["scale"] if unit == "points" else 1)) < 1e-6
-                   and abs(png.height - value["bounds"]["height"] * (value["scale"] if unit == "points" else 1)) < 1e-6]
+                   if abs(png.width - value["bounds"]["width"]) < 1e-6
+                   and abs(png.height - value["bounds"]["height"]) < 1e-6]
     ax_matches = [value for value in values if all(
-        abs(application[key] * (value["scale"] if unit == "pixels" else 1) - value["bounds"][key]) < 1e-6
+        abs(application[key] * value["scale"] - value["bounds"][key]) < 1e-6
         for key in application)]
     if len(png_matches) != 1 or len(ax_matches) != 1:
         raise ValueError("PNG/native Application do not independently match the actual runtime's unique screen contract")
     if png_matches[0]["displayId"] != ax_matches[0]["displayId"]:
         raise Mismatch("PNG and AX refer to different real displays")
     screen = png_matches[0]
-    return screen["scale"], {"contract": "runtime-pinned native WDA bounds " + unit,
-        "bounds_unit": unit, "runtime_version": native_version, "driver_platform_version": capability_version,
+    if any(abs(value[key]) >= 1e-6 for value in (screen["bounds"], application) for key in ("x", "y")):
+        raise ValueError("Full-screen landing capture requires zero native and Application origins; no offset inferred")
+    return screen["scale"], {"contract": "WDA bounds pixels = PNG pixels = AX points × native scale",
+        "bounds_unit": "pixels", "runtime_version": native_version, "driver_platform_version": capability_version,
         "screen": screen, "application": application,
-        "png_residual_pixels": [abs(png.width - screen["bounds"]["width"] * (screen["scale"] if unit == "points" else 1)),
-                                abs(png.height - screen["bounds"]["height"] * (screen["scale"] if unit == "points" else 1))],
-        "ax_residual_native_units": {key: abs(application[key] * (screen["scale"] if unit == "pixels" else 1)
+        "png_residual_pixels": [abs(png.width - screen["bounds"]["width"]),
+                                abs(png.height - screen["bounds"]["height"])],
+        "ax_residual_native_units": {key: abs(application[key] * screen["scale"]
                                                - screen["bounds"][key]) for key in application}}
 
 
