@@ -46,10 +46,14 @@ public static class ElementExtensions
             {
                 try
                 {
-                    var element = d.FindElement(locator);
-                    if (element.Displayed)
+                    // One AutomationId can belong to multiple native nodes.
+                    // Keep locator order and require the actual Displayed value.
+                    foreach (var element in d.FindElements(locator))
                     {
-                        return element;
+                        if (element.Displayed)
+                        {
+                            return element;
+                        }
                     }
                 }
                 catch (NoSuchElementException)
