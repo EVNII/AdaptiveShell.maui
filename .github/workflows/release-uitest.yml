@@ -127,31 +127,76 @@ jobs:
                       print(f"--- {path} new output ({len(chunk)} bytes) ---\n{shown}", flush=True)
 
 
+          def start_owned(command, **kwargs):
+              process = subprocess.Popen(command, start_new_session=True, **kwargs)
+              # Only process groups explicitly created by this helper are signal targets.
+              process._duo_owned_pgid = process.pid
+              return process
+
+
+          def signal_owned_group(process, sig):
+              pgid = getattr(process, "_duo_owned_pgid", None)
+              if pgid != process.pid or not isinstance(pgid, int) or pgid <= 1 or pgid == os.getpgrp():
+                  event("process-group-signal-refused", pid=process.pid, pgid=pgid)
+                  return "refused"
+              try:
+                  os.killpg(pgid, sig)
+                  return "sent"
+              except ProcessLookupError:
+                  return "absent"
+              except PermissionError as error:
+                  event("process-group-permission-error", pgid=pgid, signal=int(sig), error=str(error))
+                  # Xcode can leave root-owned descendants in this explicitly created
+                  # group. CI-only, noninteractive sudo is bounded and never targets a
+                  # broad process name or another job's group.
+                  if os.environ.get("GITHUB_ACTIONS") == "true":
+                      name = signal.Signals(sig).name.removeprefix("SIG")
+                      try:
+                          completed = subprocess.run([
+                              "sudo", "-n", "/bin/kill", "-s", name, "--", f"-{pgid}",
+                          ], capture_output=True, text=True, timeout=3)
+                          event("process-group-sudo-signal", pgid=pgid, signal=name,
+                                exit_code=completed.returncode, stderr=completed.stderr[-2000:])
+                          return "sent" if completed.returncode == 0 else "failed"
+                      except (OSError, subprocess.TimeoutExpired) as sudo_error:
+                          event("process-group-sudo-error", pgid=pgid, signal=name, error=str(sudo_error))
+                  return "failed"
+              except OSError as error:
+                  event("process-group-signal-error", pgid=pgid, signal=int(sig), error=str(error))
+                  return "failed"
+
+
           def stop_group(process, label, grace=5):
+              # Cleanup is diagnostic evidence: it must never prevent native capture or
+              # the final summary, even if the runner denies process-group operations.
               if process is None:
                   return
-              # Even an exited leader may have a live testhost/xcodebuild descendant.
               event("stop-process-group", process=label, pgid=process.pid)
               try:
-                  os.killpg(process.pid, signal.SIGTERM)
-              except ProcessLookupError:
-                  return
-              deadline = time.monotonic() + grace
-              while time.monotonic() < deadline:
-                  try:
-                      os.killpg(process.pid, 0)
-                  except ProcessLookupError:
+                  status = signal_owned_group(process, signal.SIGTERM)
+                  if status in ("absent", "refused"):
                       process.poll()
                       return
-                  time.sleep(min(0.1, max(0, deadline - time.monotonic())))
-              try:
-                  os.killpg(process.pid, signal.SIGKILL)
-              except ProcessLookupError:
-                  pass
-              try:
-                  process.wait(timeout=2)
-              except subprocess.TimeoutExpired:
-                  event("process-reap-timeout", process=label, pid=process.pid)
+                  deadline = time.monotonic() + grace
+                  while time.monotonic() < deadline:
+                      try:
+                          os.killpg(process.pid, 0)
+                      except ProcessLookupError:
+                          process.poll()
+                          return
+                      except PermissionError:
+                          # The group can still exist with descendants of another uid;
+                          # continue to the bounded, owned-group KILL fallback.
+                          break
+                      time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+                  signal_owned_group(process, signal.SIGKILL)
+                  try:
+                      process.wait(timeout=2)
+                  except subprocess.TimeoutExpired:
+                      event("process-reap-timeout", process=label, pid=process.pid)
+              except Exception as error:
+                  event("process-group-cleanup-error", process=label, pid=process.pid,
+                        type=type(error).__name__, error=str(error))
 
 
           def probe_json(url, output, timeout=2):
@@ -222,8 +267,7 @@ jobs:
               event("native-capture-begin", command=command, timeout_seconds=timeout)
               try:
                   with path.open("wb") as stream:
-                      process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT,
-                                                 start_new_session=True)
+                      process = start_owned(command, stdout=stream, stderr=subprocess.STDOUT)
                       try:
                           code = process.wait(timeout=timeout)
                       except subprocess.TimeoutExpired:
@@ -276,16 +320,24 @@ jobs:
                           "--results-directory", "TestResults", "--diag", "TestResults/duo-vstest.log",
                       ]
                       with (RESULTS / "duo-test-console.log").open("wb") as test_log:
-                          test = subprocess.Popen(command, stdout=test_log, stderr=subprocess.STDOUT,
-                                                  start_new_session=True)
+                          test = start_owned(command, stdout=test_log, stderr=subprocess.STDOUT)
                           exit_code = wait_test(test, 300)
               except Exception as error:
                   event("diagnostic-error", phase=phase, type=type(error).__name__, error=str(error))
               finally:
-                  stop_group(test, "dotnet-test", grace=1)
-                  # Snapshot after stopping the test, using native simctl rather than Appium.
-                  collect_native_evidence()
-                  flush_logs()
+                  try:
+                      stop_group(test, "dotnet-test", grace=1)
+                  finally:
+                      # Independent finally: cleanup denial must not skip native evidence.
+                      try:
+                          collect_native_evidence()
+                      except Exception as capture_error:
+                          event("native-capture-unexpected-error", type=type(capture_error).__name__,
+                                error=str(capture_error))
+                  try:
+                      flush_logs()
+                  except Exception as log_error:
+                      event("live-log-flush-error", error=str(log_error))
                   result = {"scope": "startup diagnostic only; not a release/theme quality gate",
                             "phase": phase, "exit_code": exit_code,
                             "appium_ready_budget_seconds": 60, "test_budget_seconds": 300,
