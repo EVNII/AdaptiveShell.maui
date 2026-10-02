@@ -1,11 +1,14 @@
 using System.Diagnostics;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using OpenQA.Selenium.Appium;
 
 namespace AdaptiveShell.UITests;
 
 /// <summary>
 /// 切换系统深浅色外观。命令直接跑在测试进程所在机器(CI runner/本机):
-/// Android 走 adb、iOS 走 simctl、Windows 改注册表(WinUI 应用实时跟随),
+/// Android 走 adb、iOS 走 simctl、Windows 改系统设置并广播主题通知,
 /// MacCatalyst 走 osascript(需自动化授权,实验位)。
 /// </summary>
 public static class Appearance
@@ -39,9 +42,7 @@ public static class Appearance
                 break;
             }
             case "windows":
-                Run("reg",
-                    @"add", @"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-                    "/v", "AppsUseLightTheme", "/t", "REG_DWORD", "/d", dark ? "0" : "1", "/f");
+                SetWindowsAppearance(dark);
                 break;
             case "maccatalyst":
                 Run("osascript", "-e",
@@ -54,6 +55,35 @@ public static class Appearance
         // 等主题传播与页面重渲染
         Thread.Sleep(2500);
     }
+
+    static void SetWindowsAppearance(bool dark)
+    {
+        if (!OperatingSystem.IsWindows())
+            throw new PlatformNotSupportedException("Windows appearance requires a Windows runner.");
+
+        const string personalize = @"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+        var expected = dark ? 0 : 1;
+        Run("reg", "add", personalize,
+            "/v", "AppsUseLightTheme", "/t", "REG_DWORD", "/d", expected.ToString(), "/f");
+        var actual = Registry.GetValue(
+            @"HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            "AppsUseLightTheme", null);
+        if (actual is not int value || value != expected)
+            throw new InvalidOperationException($"AppsUseLightTheme was '{actual}', expected {expected}.");
+
+        // MAUI 的 Windows 生命周期只在 WM_SETTINGCHANGE/WM_THEMECHANGE 后重新读取
+        // AppInfo.RequestedTheme。仅写注册表会让 WinUI 图标变化,AppThemeBinding 却保持旧值。
+        // 通知所有顶层窗口,与系统设置切换主题时的传播路径一致。
+        var sent = SendMessageTimeout(new IntPtr(0xffff), 0x001a, UIntPtr.Zero,
+            "ImmersiveColorSet", 0x0002 | 0x0020, 5000, out _);
+        if (sent == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows theme notification failed or timed out.");
+        Console.WriteLine($"Windows appearance confirmed: {(dark ? "dark" : "light")}; setting-change broadcast sent.");
+    }
+
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr wParam,
+        string lParam, uint flags, uint timeout, out UIntPtr result);
 
     static string DeviceSerial()
     {

@@ -2,6 +2,7 @@ using NUnit.Framework;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Appium;
 using OpenQA.Selenium.Support.UI;
+using System.Text.Json;
 
 namespace AdaptiveShell.UITests;
 
@@ -98,18 +99,18 @@ public class DarkModeTests : BaseTest
                 var text = Driver.WaitForAccessibilityId("counterBtn", 5).Text;
                 return text != previousText ? text : null;
             })!;
-            Shot("light-group-child");
+            CaptureThemeStage("light", 30, "light-group-child");
 
             Appearance.SetDark(true);
             AssertGroupChildState(counterText);
             Driver.WaitForAccessibilityId("home");
             Driver.WaitForAccessibilityId("home2");
             Driver.WaitForAccessibilityId("media");
-            Shot("dark-group-child");
+            CaptureThemeStage("dark", 31, "dark-group-child");
 
             Appearance.SetDark(false);
             AssertGroupChildState(counterText);
-            Shot("light-group-child-restored");
+            CaptureThemeStage("light-restored", 32, "light-group-child-restored");
 
             if (isIosWide)
             {
@@ -193,6 +194,44 @@ public class DarkModeTests : BaseTest
     {
         Driver.WaitForAccessibilityId("music");
         Driver.WaitForAccessibilityId("Collapse navigation rail");
+    }
+
+    void CaptureThemeStage(string stage, int sequence, string ordinaryLabel)
+    {
+        if (AppiumSetup.Platform != "windows")
+        {
+            Shot(ordinaryLabel);
+            return;
+        }
+
+        var results = Path.Combine(AppiumSetup.RepoRoot, "TestResults");
+        Directory.CreateDirectory(results);
+        var window = Driver.FindElement(By.XPath("/*"));
+        var evidence = new
+        {
+            stage,
+            png = $"shots/windows-{AppiumSetup.Form ?? "default"}/{sequence:00}-theme-{stage}.png",
+            window = Bounds(window),
+            elements = new
+            {
+                home = Bounds(Driver.WaitForAccessibilityId("home")),
+                home2 = Bounds(Driver.WaitForAccessibilityId("home2")),
+                media = Bounds(Driver.WaitForAccessibilityId("media")),
+                counterBtn = Bounds(Driver.WaitForAccessibilityId("counterBtn")),
+            },
+        };
+        File.WriteAllText(Path.Combine(results, $"windows-{stage}.xml"), Driver.PageSource);
+        // 缺失截图或原生坐标必须失败;不用会吞掉截图错误的普通 Shot。
+        Shots.Save(Driver, $"theme-{stage}", sequence);
+        File.WriteAllText(Path.Combine(results, $"windows-{stage}.json"),
+            JsonSerializer.Serialize(evidence, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    static object Bounds(IWebElement element)
+    {
+        var location = element.Location;
+        var size = element.Size;
+        return new { x = location.X, y = location.Y, width = size.Width, height = size.Height };
     }
 
     // 当前页面(无论 home 还是组子页)都有 counterBtn,适合当探针

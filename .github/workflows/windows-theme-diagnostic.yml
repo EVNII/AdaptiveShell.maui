@@ -1,0 +1,49 @@
+name: Windows Theme Diagnostic
+on:
+  push:
+    branches: [codex/windows-theme-diagnostic]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-theme:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install MAUI workloads
+        run: dotnet workload install maui-windows
+      - name: Build example app
+        run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-windows10.0.19041.0
+      - name: Install Appium
+        run: |
+          npm i -g appium
+          appium driver install --source npm appium-windows-driver
+      - name: Start Appium
+        shell: pwsh
+        run: Start-Process cmd.exe -ArgumentList '/c','npx --yes appium > appium.log 2>&1' -WindowStyle Hidden
+      - name: Run UI tests
+        shell: pwsh
+        run: |
+          Start-Sleep -Seconds 10
+          $exe = Get-ChildItem "Example/ExampleAShellApp/bin/Debug/net10.0-windows10.0.19041.0" -Filter ExampleAShellApp.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "ExampleAShellApp.exe not found" }
+          $env:UITEST_PLATFORM = "windows"
+          $env:UITEST_APP_PATH = $exe.FullName
+          dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+      - name: Verify rendered Windows theme and icons
+        run: python Tests/AdaptiveShell.UITests/Scripts/verify_windows_theme.py TestResults --strict > TestResults/windows-theme.json
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-theme-diagnostic
+          path: |
+            TestResults
+            appium.log
