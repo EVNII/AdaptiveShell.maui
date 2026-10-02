@@ -1,4 +1,4 @@
-name: Duo resource 4 preboot startup diagnostic
+name: Duo resource 5 prebuilt WDA startup diagnostic
 
 # Startup/resource investigation on a separate public diagnostic branch.
 # This single filtered test does not satisfy the release/full-theme gate.
@@ -15,7 +15,7 @@ jobs:
   duo-startup-diagnostic:
     runs-on: xcode-27
     timeout-minutes: 90
-    name: Duo resource 4 preboot startup diagnostic (27.1)
+    name: Duo resource 5 prebuilt WDA startup diagnostic (27.1)
     env:
       # Explicit resource comparison switch for this dedicated CI VM only.
       # Set false for the control; no SDKs or iOS 27.1 images are selected.
@@ -259,12 +259,179 @@ jobs:
               probe_json("http://127.0.0.1:8100/status", "duo-wda-status.json", timeout=2)
 
 
+
+          def verify_prebuilt_wda_configuration(require_session=False):
+              expected = (Path(os.environ["RUNNER_TEMP"]).resolve() / "duo-wda")
+              selected = os.environ.get("DUO_DIAGNOSTIC_WDA_DERIVED_DATA_PATH")
+              if (os.environ.get("DUO_DIAGNOSTIC_USE_PREBUILT_WDA") != "true"
+                      or selected != str(expected)):
+                  raise ValueError("Duo prebuilt-WDA opt-in and exact derivedDataPath are required")
+              evidence = json.loads((RESULTS / "duo-wda-prebuild.json").read_text())
+              if (evidence.get("status") != "verified"
+                      or evidence.get("derived_data_path") != selected
+                      or evidence.get("device_udid") != os.environ.get("DUO_DEVICE_UDID")
+                      or evidence.get("wda_version") != "16.12.11"
+                      or evidence.get("xcuitest_version") != "12.13.3"):
+                  raise ValueError("Prebuilt WDA identity/path does not match this Duo session")
+              if not Path(evidence["runner_app"]).is_dir() or not all(
+                      Path(path).is_file() for path in evidence["xctestrun_files"]):
+                  raise ValueError("Prebuilt WDA products are missing")
+              if require_session:
+                  # The diagnostic-only C# hook must save the options actually supplied to
+                  # new IOSDriver before the constructor is allowed to start the session.
+                  caps = json.loads((RESULTS / "duo-wda-session-capabilities.json").read_text())
+                  if (not isinstance(caps, dict)
+                          or caps.get("appium:usePrebuiltWDA") is not True
+                          or caps.get("appium:derivedDataPath") != selected
+                          or caps.get("appium:usePreinstalledWDA", False) is not False
+                          or caps.get("appium:useSimpleBuildTest", False) is not False):
+                      raise ValueError("Actual session options do not use the exact prebuilt WDA")
+              event("prebuilt-wda-configuration-verified", derived_data_path=selected,
+                    actual_session_options=require_session)
+
+
+          def prebuild_wda():
+              """Build the installed WDA once, while the verified Duo is still Shutdown."""
+              import plistlib
+              import re
+
+              RESULTS.mkdir(parents=True, exist_ok=True)
+              evidence = {"scope": "optional Duo startup diagnostic; not a release quality gate",
+                          "status": "preparing", "build_budget_seconds": 780}
+              evidence_file = RESULTS / "duo-wda-prebuild.json"
+
+              def save():
+                  evidence_file.write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+
+              def run(command, filename, seconds):
+                  code = capture(command, filename, seconds)
+                  if code:
+                      raise ValueError(f"{filename} failed with exit {code}")
+                  return (RESULTS / filename).read_text(encoding="utf-8")
+
+              def shutdown_snapshot(stage, udid):
+                  value = json.loads(run(["xcrun", "simctl", "list", "devices", "--json"],
+                                         f"duo-wda-devices-{stage}.json", 20))
+                  items = value.get("devices", {}).get("com.apple.CoreSimulator.SimRuntime.iOS-27-1", [])
+                  matching = [item for item in items if isinstance(item, dict) and item.get("udid") == udid]
+                  if (len(matching) != 1 or matching[0].get("state") != "Shutdown"
+                          or matching[0].get("isAvailable") is not True
+                          or matching[0].get("deviceTypeIdentifier") != "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo"):
+                      raise ValueError(f"Exact Duo is not available and Shutdown {stage} WDA build")
+                  return matching[0]["state"]
+
+              try:
+                  if (os.environ.get("GITHUB_ACTIONS") != "true"
+                          or os.environ.get("RUNNER_OS") != "macOS"
+                          or os.environ.get("GITHUB_JOB") != "duo-startup-diagnostic"):
+                      raise ValueError("WDA prebuild is only allowed in this dedicated Duo CI job")
+                  environment = json.loads((RESULTS / "duo-environment.json").read_text())
+                  udid = os.environ["DUO_DEVICE_UDID"]
+                  if (environment.get("status") != "verified"
+                          or environment.get("device", {}).get("udid") != udid
+                          or environment.get("sdk", {}).get("version") != "27.1"
+                          or environment.get("xcode", {}).get("version") != "27.1"
+                          or environment.get("runtime", {}).get("buildversion") != "24A94401"):
+                      raise ValueError("Missing exact Duo/Xcode/runtime environment verification")
+                  derived = Path(os.environ["RUNNER_TEMP"]).resolve() / "duo-wda"
+                  if derived.exists():
+                      raise ValueError("Unique Duo WDA derivedDataPath already exists; refusing reuse")
+                  derived.mkdir()
+                  evidence.update(device_udid=udid, derived_data_path=str(derived))
+                  save()
+                  # Resolve the dependency from the actual installed XCUITest package;
+                  # never use a downloaded substitute or another WDA checkout.
+                  node_script = r"""
+                  const p=require('path'),f=require('fs'),o=require('os');
+                  const a=process.env.APPIUM_HOME||p.join(o.homedir(),'.appium');
+                  const d=p.join(a,'node_modules','appium-xcuitest-driver');
+                  const q=require.resolve('appium-webdriveragent/package.json',{paths:[d]});
+                  const w=JSON.parse(f.readFileSync(q,'utf8'));
+                  const x=JSON.parse(f.readFileSync(p.join(d,'package.json'),'utf8'));
+                  process.stdout.write(JSON.stringify({wda_version:w.version,xcuitest_version:x.version,
+                    package_json:q,project:p.join(p.dirname(q),'WebDriverAgent.xcodeproj')}));
+                  """
+                  installed = json.loads(run(["node", "-e", node_script], "duo-wda-installed-identity.json", 15))
+                  if installed.get("wda_version") != "16.12.11" or installed.get("xcuitest_version") != "12.13.3":
+                      raise ValueError("This source-reviewed candidate requires installed WDA16.12.11/XCUITest12.13.3")
+                  project = Path(installed["project"])
+                  if not project.is_absolute() or not project.is_dir():
+                      raise ValueError("Actual installed WebDriverAgent.xcodeproj is missing")
+                  evidence.update(installed)
+                  evidence["device_state_before"] = shutdown_snapshot("before", udid)
+                  command = ["xcodebuild", "build-for-testing", "-project", str(project),
+                             "-scheme", "WebDriverAgentRunner", "-configuration", "Debug",
+                             "-sdk", "iphonesimulator27.1", "-destination", f"id={udid}",
+                             "-derivedDataPath", str(derived), "IPHONEOS_DEPLOYMENT_TARGET=27.1",
+                             "GCC_TREAT_WARNINGS_AS_ERRORS=0", "COMPILER_INDEX_STORE_ENABLE=NO"]
+                  (RESULTS / "duo-wda-build-command.json").write_text(json.dumps({
+                      "command": command, "cwd": str(Path.cwd()), "timeout_seconds": 780,
+                      "scope": "build-for-testing only; exact Shutdown Duo destination",
+                  }, indent=2), encoding="utf-8")
+                  save()
+                  run(command, "duo-wda-build.log", 780)
+                  evidence["device_state_after"] = shutdown_snapshot("after", udid)
+                  products = derived / "Build" / "Products"
+                  runner = products / "Debug-iphonesimulator" / "WebDriverAgentRunner-Runner.app"
+                  bundle = runner / "PlugIns" / "WebDriverAgentRunner.xctest"
+                  xctestruns = sorted(products.glob("*.xctestrun"))
+                  if not runner.is_dir() or not bundle.is_dir() or not xctestruns:
+                      raise ValueError("Successful build lacks WDA Runner.app, test bundle, or xctestrun products")
+                  for item in xctestruns:
+                      shutil.copyfile(item, RESULTS / ("duo-wda-" + item.name))
+                      with item.open("rb") as stream:
+                          if not isinstance(plistlib.load(stream), dict):
+                              raise ValueError("Generated xctestrun is unreadable")
+                  shutil.copyfile(runner / "Info.plist", RESULTS / "duo-wda-runner-info.plist")
+                  shutil.copyfile(bundle / "Info.plist", RESULTS / "duo-wda-test-info.plist")
+                  with (runner / "Info.plist").open("rb") as stream:
+                      runner_info = plistlib.load(stream)
+                  with (bundle / "Info.plist").open("rb") as stream:
+                      bundle_info = plistlib.load(stream)
+                  (RESULTS / "duo-wda-sdk-info.json").write_text(json.dumps({
+                      "runner_DTSDKName": runner_info.get("DTSDKName"),
+                      "test_bundle_DTSDKName": bundle_info.get("DTSDKName"),
+                      "test_bundle_CFBundleExecutable": bundle_info.get("CFBundleExecutable"),
+                  }, indent=2), encoding="utf-8")
+                  if bundle_info.get("DTSDKName") != "iphonesimulator27.1":
+                      raise ValueError("WDA test bundle was not built with Simulator SDK27.1")
+                  if runner_info.get("DTSDKName") not in (None, "iphonesimulator27.1"):
+                      raise ValueError("WDA runner host carries a different Simulator SDK")
+                  executable = bundle_info.get("CFBundleExecutable")
+                  if not isinstance(executable, str) or Path(executable).name != executable:
+                      raise ValueError("WDA test bundle executable is missing")
+                  native = run(["xcrun", "vtool", "-show-build", str(bundle / executable)],
+                               "duo-wda-native-build.txt", 20)
+                  sdks = re.findall(r"(?m)^\s*sdk\s+(\S+)\s*$", native)
+                  if not sdks or set(sdks) != {"27.1"}:
+                      raise ValueError("Native WDA test bundle SDK is not exactly27.1")
+                  evidence.update(status="verified", runner_app=str(runner), test_bundle=str(bundle),
+                                  xctestrun_files=[str(item) for item in xctestruns], native_sdks=sdks,
+                                  session_capabilities={"appium:usePrebuiltWDA": True,
+                                                        "appium:derivedDataPath": str(derived)})
+                  save()
+                  # The C# diagnostic hook applies these only for ios + duo, writes actual
+                  # session options, and must reject partial opt-in before new IOSDriver.
+                  with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as stream:
+                      stream.write("DUO_DIAGNOSTIC_USE_PREBUILT_WDA=true\n")
+                      stream.write(f"DUO_DIAGNOSTIC_WDA_DERIVED_DATA_PATH={derived}\n")
+                  event("wda-prebuild-verified", **evidence)
+                  return 0
+              except Exception as error:
+                  evidence.update(status="failed", error=str(error), error_type=type(error).__name__)
+                  save()
+                  event("wda-prebuild-failed", **evidence)
+                  return 1
+
+
           def main():
               RESULTS.mkdir(parents=True, exist_ok=True)
               test = None
               exit_code = 2
-              phase = "appium-readiness"
+              phase = "prebuilt-wda-configuration"
               try:
+                  verify_prebuilt_wda_configuration()
+                  phase = "appium-readiness"
                   # Probe the live server again after simulator boot. Preboot status is
                   # evidence only and must never satisfy this fresh readiness check.
                   if not wait_ready(None, "http://127.0.0.1:4723/status", 180):
@@ -281,7 +448,11 @@ jobs:
                       with (RESULTS / "duo-test-console.log").open("wb") as test_log:
                           test = start_owned(command, stdout=test_log, stderr=subprocess.STDOUT)
                           exit_code = wait_test(test, 900)
+                          if exit_code == 0:
+                              phase = "prebuilt-wda-session-options"
+                              verify_prebuilt_wda_configuration(require_session=True)
               except Exception as error:
+                  exit_code = 2
                   event("diagnostic-error", phase=phase, type=type(error).__name__, error=str(error))
               finally:
                   if exit_code != 0:
@@ -491,6 +662,8 @@ jobs:
           if __name__ == "__main__":
               if len(sys.argv) == 3 and sys.argv[1] == "--health":
                   sys.exit(health(sys.argv[2]))
+              if sys.argv[1:] == ["--prebuild-wda"]:
+                  sys.exit(prebuild_wda())
               if sys.argv[1:] == ["--shutdown-build-servers"]:
                   sys.exit(shutdown_build_servers())
               if sys.argv[1:] == ["--start-appium-preboot"]:
@@ -535,6 +708,11 @@ jobs:
           appium --version > TestResults/duo-appium-version.txt
           appium driver list --installed --json > TestResults/duo-drivers.json
           node -e 'const p=require("path"),f=require("fs"),o=require("os"); const a=process.env.APPIUM_HOME||p.join(o.homedir(),".appium"); const q=require.resolve("appium-webdriveragent/package.json",{paths:[p.join(a,"node_modules/appium-xcuitest-driver")]}); process.stdout.write(f.readFileSync(q,"utf8"));' > TestResults/duo-wda-version.json
+      # Requires the diagnostic-only C# capability hook in this branch. If
+      # installed dependency versions differ, fail instead of swapping WDA.
+      - name: Build installed WDA16.12.11 for exact Shutdown Duo before boot
+        timeout-minutes: 15
+        run: python3 "$RUNNER_TEMP/duo-startup-probe.py" --prebuild-wda
       - name: Build UI test assembly before simulator boot
         timeout-minutes: 10
         run: dotnet build Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --disable-build-servers
@@ -552,7 +730,7 @@ jobs:
         timeout-minutes: 5
         uses: actions/upload-artifact@v4
         with:
-          name: duo-preboot-environment
+          name: duo-resource5-preboot-environment
           path: |
             TestResults/duo-*
             appium.log
@@ -584,7 +762,7 @@ jobs:
         timeout-minutes: 5
         uses: actions/upload-artifact@v4
         with:
-          name: duo-startup-diagnostic
+          name: duo-resource5-startup-diagnostic
           path: |
             TestResults
             appium.log
