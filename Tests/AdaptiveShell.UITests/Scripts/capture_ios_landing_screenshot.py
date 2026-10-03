@@ -101,7 +101,7 @@ def main(request_path):
         wda_session=screens_before['sessionId'];proof['wda_session_id']=wda_session
         settings_before=http('/session/'+wda_session+'/appium/settings','wda-settings-before')
         require(settings_before.get('sessionId')==wda_session and type(settings_before['value'].get('screenshotQuality')) is int,'Actual WDA screenshot settings must be recorded')
-        devices=json.loads(native(['xcrun','simctl','list','devices','available','-j'],'devices'))
+        devices=json.loads(native(['xcrun','simctl','list','devices',request['actual_udid'],'-j'],'devices'))
         matches=[(runtime,d) for runtime,rows in devices.get('devices',{}).items() for d in rows if d.get('udid')==request['actual_udid']]
         require(len(matches)==1,'Actual session UDID must identify exactly one native device');runtime,device=matches[0]
         require(device.get('state')=='Booted' and device.get('isAvailable') is True and device.get('name')==request['actual_device_name'],'The exact native session device must be available and Booted')
@@ -158,7 +158,7 @@ def verify_saved_capture(root,sequence,label,identity,png):
         require(command['stdout_file']==f'shots/ios-compact/provider-evidence/{sequence:02d}-{label}-{label_suffix}.stdout' and command['stderr_file']==f'shots/ios-compact/provider-evidence/{sequence:02d}-{label}-{label_suffix}.stderr','Original command records are incomplete')
         require(digest(file(command['stdout_file']))==command.get('stdout_sha256') and digest(file(command['stderr_file']))==command.get('stderr_sha256'),'Original command stdout/stderr changed')
         raw[label_suffix]=file(command['stdout_file']).read_bytes()
-    expected_native={0:['git','rev-parse','HEAD'],1:['git','status','--porcelain','--untracked-files=no'],5:['xcrun','simctl','list','devices','available','-j'],6:['xcrun','simctl','list','runtimes','-j'],7:['xcrun','simctl','help','io']}
+    expected_native={0:['git','rev-parse','HEAD'],1:['git','status','--porcelain','--untracked-files=no'],5:['xcrun','simctl','list','devices',request['actual_udid'],'-j'],6:['xcrun','simctl','list','runtimes','-j'],7:['xcrun','simctl','help','io']}
     for index,argv in expected_native.items():require(commands[index]['argv']==argv,'Original bounded native command changed')
     expected_routes={2:'/status',3:'/wda/screens',4:'/session/'+proof['wda_session_id']+'/appium/settings',9:'/wda/screens',10:'/status',11:'/session/'+proof['wda_session_id']+'/appium/settings'}
     for index,route in expected_routes.items():
