@@ -20,7 +20,7 @@ using ImageButton = Android.Widget.ImageButton;
 
 namespace AdaptiveShell.Platforms.Android
 {
-    public class AShellView : IDisposable
+    public partial class AShellView : IDisposable
     {
         // Material 3 window size class: 紧凑宽度(<600dp)使用底部导航栏,否则使用侧边 NavigationRail
         const int CompactWidthBreakpointDp = 600;
@@ -181,6 +181,7 @@ namespace AdaptiveShell.Platforms.Android
         private void OnRootAttachedToWindow(object? sender,
             global::Android.Views.View.ViewAttachedToWindowEventArgs e)
         {
+            StartNavigationAppearanceDiagnostics();
             // WindowHandler initializes system bars before content is attached. Posting also
             // lets MAUI finish mapping the Page background used behind the top inset.
             _overlayLayout.Post(UpdateStatusBarAppearance);
@@ -190,6 +191,8 @@ namespace AdaptiveShell.Platforms.Android
         private void OnRootDetachedFromWindow(object? sender,
             global::Android.Views.View.ViewDetachedFromWindowEventArgs e)
         {
+            RecordNavigationAppearanceDiagnostic("detached", force: true);
+            StopNavigationAppearanceDiagnostics();
             RestoreStatusBarAppearance();
             RestoreNavigationBarAppearance();
         }
@@ -268,6 +271,19 @@ namespace AdaptiveShell.Platforms.Android
         }
 
         private void UpdateNavigationBarAppearance()
+        {
+            RecordNavigationAppearanceDiagnostic("before-update", force: true);
+            try
+            {
+                UpdateNavigationBarAppearanceCore();
+            }
+            finally
+            {
+                RecordNavigationAppearanceDiagnostic("after-update", force: true);
+            }
+        }
+
+        private void UpdateNavigationBarAppearanceCore()
         {
             if (_disposed || !_overlayLayout.IsAttachedToWindow
                 || !OperatingSystem.IsAndroidVersionAtLeast(26)
@@ -1113,6 +1129,7 @@ namespace AdaptiveShell.Platforms.Android
                 return;
             }
 
+            StopNavigationAppearanceDiagnostics();
             _disposed = true;
             _virtualView.PropertyChanged -= OnRootBackgroundChanged;
             _overlayLayout.ViewAttachedToWindow -= OnRootAttachedToWindow;

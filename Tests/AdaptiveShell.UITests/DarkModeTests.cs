@@ -251,6 +251,7 @@ public class DarkModeTests : BaseTest
                 Shot(ordinaryLabel);
                 // Required capture: an ordinary Shot can swallow screenshot failures.
                 Shots.Save(Driver, $"theme-{stage}", sequence);
+                AndroidNavigationAppearanceDiagnostics.Capture(Driver, stage, deviceInfo);
                 File.WriteAllText(Path.Combine(androidResults, sourceAfter), Driver.PageSource);
                 systemBarsAfter = Driver.ExecuteScript("mobile: getSystemBars");
                 enabledDuringAfter = ReadMultiWindowSetting();

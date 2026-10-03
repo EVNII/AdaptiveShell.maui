@@ -53,6 +53,16 @@
 		<TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
 	</PropertyGroup>
 
+	<!-- Apply only this application's diagnostic manifest after SDK defaults.
+	     The custom property can reach project references; AndroidManifest cannot. -->
+	<Target Name="ApplyAShellAndroidNavigationDiagnosticManifest"
+	        BeforeTargets="_GetAndroidPackageName;GetAndroidDependencies"
+	        Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android' And '$(AShellAndroidNavigationDiagnosticManifest)' != ''">
+		<PropertyGroup>
+			<AndroidManifest>$(AShellAndroidNavigationDiagnosticManifest)</AndroidManifest>
+		</PropertyGroup>
+	</Target>
+
 	<ItemGroup>
 		<!-- App Icon -->
 		<MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#512BD4" />
