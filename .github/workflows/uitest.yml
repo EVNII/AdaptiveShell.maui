@@ -158,6 +158,45 @@ jobs:
         # SdkOnly 链接可绕过 MT0180(库用到的 UITab 等 API 在 26.3 SDK 内)
         run: dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64 -p:MtouchLink=SdkOnly
 
+      - name: Select verified Xcode for WebDriverAgent
+        # The AUT retains the original newer-SDK build above. The iOS 18 WDA
+        # toolchain matches the successful release iOS 18 consumer (Xcode 16.4).
+        # Do not copy a missing runtime library into the failing Xcode 26.3.
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          mkdir -p TestResults
+          WDA_XCODE_APP="$(realpath /Applications/Xcode_16.4.app)"
+          WDA_DEVELOPER_PATH="$WDA_XCODE_APP/Contents/Developer"
+          WDA_TESTING_INTEROP="$WDA_DEVELOPER_PATH/Platforms/iPhoneSimulator.platform/Developer/usr/lib/lib_TestingInterop.dylib"
+          printf 'AUT build SDK: ' > TestResults/pr-wda-toolchain.txt
+          /usr/libexec/PlistBuddy -c 'Print DTSDKName' Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app/Info.plist >> TestResults/pr-wda-toolchain.txt
+          printf 'WDA developer path: %s\nRequired testing library: %s\n' "$WDA_DEVELOPER_PATH" "$WDA_TESTING_INTEROP" >> TestResults/pr-wda-toolchain.txt
+          if [ ! -f "$WDA_TESTING_INTEROP" ] || [ ! -r "$WDA_TESTING_INTEROP" ]; then
+            echo 'Required library is missing; refuse to start WDA with an incomplete toolchain.' >> TestResults/pr-wda-toolchain.txt
+            cat TestResults/pr-wda-toolchain.txt
+            exit 1
+          fi
+          shasum -a 256 "$WDA_TESTING_INTEROP" >> TestResults/pr-wda-toolchain.txt
+          sudo xcode-select -s "$WDA_DEVELOPER_PATH"
+          [ "$(xcode-select -p)" = "$WDA_DEVELOPER_PATH" ]
+          WDA_XCODE_VERSION="$(xcodebuild -version)"
+          printf '%s\n' "$WDA_XCODE_VERSION" >> TestResults/pr-wda-toolchain.txt
+          [ "$(printf '%s\n' "$WDA_XCODE_VERSION" | head -n 1)" = 'Xcode 16.4' ]
+          printf 'WDA simulator SDK: ' >> TestResults/pr-wda-toolchain.txt
+          xcrun --sdk iphonesimulator --show-sdk-version >> TestResults/pr-wda-toolchain.txt
+          echo "DEVELOPER_DIR=$WDA_DEVELOPER_PATH" >> "$GITHUB_ENV"
+          xcrun simctl list devices available -j | python3 -c '
+          import json, os, sys
+          data = json.load(sys.stdin)
+          exact = [(runtime, device) for runtime, devices in data["devices"].items() for device in devices if device.get("udid") == os.environ["UDID"]]
+          if len(exact) != 1 or exact[0][1].get("name") != "iPhone 16" or exact[0][1].get("isAvailable") is not True:
+              raise SystemExit("The original iPhone 16 UDID must remain uniquely available under the verified WDA toolchain")
+          print(json.dumps({"runtime": exact[0][0], "device": exact[0][1]}, separators=(",", ":")))
+          ' >> TestResults/pr-wda-toolchain.txt
+          echo 'WDA toolchain preflight verified; native UI suite remains pending.' >> TestResults/pr-wda-toolchain.txt
+          cat TestResults/pr-wda-toolchain.txt
+
       - name: Run UI tests
         run: |
           npx appium --keep-alive-timeout 900 --default-capabilities '{"appium:showXcodeLog":true}' > appium.log 2>&1 &
