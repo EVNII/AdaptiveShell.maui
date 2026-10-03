@@ -89,19 +89,24 @@ Tests/AdaptiveShell.UITests/run-uitest.ps1
 Configuration via environment variables: `UITEST_PLATFORM`, `UITEST_FORM` (`compact`|`wide`|`duo`), `UITEST_APP_PATH`, `UITEST_DEVICE_NAME`, `UITEST_DEVICE_UDID`, `UITEST_APPIUM_URL`.
 
 `DarkModeTests` additionally switches the system appearance (adb `uimode`, `simctl ui appearance`, Windows registry theme) and verifies the shell stays functional in dark mode; screenshots from both themes land in the report.
+Android also reads back native night mode; the locked API29 CI image uses an explicitly enabled privileged emulator shell for the same system service command.
 
-CI (`.github/workflows/uitest.yml`) runs Android (phone + tablet emulator matrix), iOS and Windows on every push/PR; Mac Catalyst runs locally only.
+Android theme tests also require Python 3 to verify status-bar foreground and each system navigation key from three original screenshots, native `mobile:getSystemBars` frames, and stable SystemUI/Launcher accessibility bounds. On the observed API32/33 tablet layouts, an absent system navigation-bar frame is accepted only when the original native Launcher taskbar hierarchy supplies one stable full-width bottom frame and all three actual navigation-key children. The capture temporarily enables all native windows and restores the original setting. Missing evidence or insufficient foreground contrast fails the theme test and report.
+
+`LandingPageDarkModeTests` keeps the group landing page open through light, dark, and restored light appearance. On Android compact and iOS compact/Duo it checks the page background, both SVG icons and titles from original screenshots and native accessibility bounds, then opens both children, clicks their counters, and returns using the native Back affordance. It also verifies both child backgrounds and the returned landing page backgrounds, icons, and titles from the dark captures. Python 3 is required; missing captures or invisible icons fail the test and report. Sidebar, drawer, and direct-leaf layouts have no dedicated landing page and explicitly skip this test.
+
+CI (`.github/workflows/uitest.yml`) runs Android (phone + tablet emulator matrix), iOS and Windows on every push/PR. The public full-matrix workflow also runs native Mac Catalyst E2E.
 
 ## Release & quality gate
 
 Releases are gated on a full E2E matrix that runs on the **public repo** ([EVNII/AdaptiveShell.maui](https://github.com/EVNII/AdaptiveShell.maui), where GitHub Actions is free) via `.github/workflows/release-uitest.yml`, triggered on every sync to `main`:
 
-- **iOS** 18 (macos-15) / 26 (macos-26) / 27 (xcode-27 preview, experimental) × { iPhone (compact), iPhone Duo (when available), iPad (wide) } — devices are discovered dynamically from the installed simulator runtimes
-- **iPhone Duo** has a dedicated required cell using Xcode 27.1 beta, the exact iOS 27.1 runtime, and an app rebuilt with SDK 27.1. Missing Duo support fails the cell instead of omitting it. This runs the navigation and theme tests in the simulator's initial pose; fold transitions are not covered.
+- **iOS** 18 (macos-15) / 26 (macos-26) / 27 (xcode-27 preview, experimental) × { iPhone (compact), iPad (wide) } — devices are discovered dynamically from the installed simulator runtimes
+- **iPhone Duo** is excluded from automatic E2E and the release gate; this release does not claim Duo E2E validation.
 - **Android** API 26–36 (Appium UiAutomator2's floor is Android 8.0/API 26; API 23–25 remain compile-level coverage) × { phone, tablet }
-- **Windows** single cell; **Mac Catalyst** experimental (hosted runners cannot grant the accessibility permission the Mac2 driver needs — verify locally)
+- **Windows** single cell; **Mac Catalyst** single native cell.
 
-The gate: `publish.yml`'s `release-gate` job waits for the matrix run matching the tagged commit and blocks the NuGet push unless every non-experimental cell is green. Cells whose environment does not exist (e.g. an iOS major not present on the runner image) are skipped rather than failed.
+The gate: `publish.yml`'s `release-gate` job waits for the matrix run matching the tagged commit and blocks the NuGet push unless every required cell is green, including the iOS 27 preview and Mac Catalyst cells. Missing required environment or evidence fails validation; platform-specific test exclusions remain explicit in the complete TRX records.
 
 Screenshots are captured at key steps in every test (`Shot(...)` in `Tests/AdaptiveShell.UITests/BaseTest.cs`), uploaded per cell as artifacts, and assembled into a report published to GitHub Pages: <https://evnii.github.io/AdaptiveShell.maui/>.
 

@@ -23,7 +23,7 @@ EXPECTED = {"light": "#512BD4", "dark": "#AC99EA", "light-restored": "#512BD4"}
 
 
 class PNG:
-    def __init__(self, path):
+    def __init__(self, path, *, decode_pixels=True):
         data = path.read_bytes()
         if data[:8] != b"\x89PNG\r\n\x1a\n":
             raise ValueError("Not a PNG file")
@@ -57,6 +57,13 @@ class PNG:
         if len(raw) != self.height * (stride + 1):
             raise ValueError("Unexpected decompressed PNG size")
         self.rows = []
+        self._pixels_decoded = decode_pixels
+        if not decode_pixels:
+            # Every CRC, IHDR, compressed byte, decompressed length and row filter
+            # has the same validation as full decoding. No caller requests pixels.
+            if any(raw[y * (stride + 1)] > 4 for y in range(self.height)):
+                raise ValueError("Unsupported PNG row filter")
+            return
         previous = bytearray(stride)
         for y in range(self.height):
             start = y * (stride + 1)
@@ -64,6 +71,15 @@ class PNG:
             if mode > 4:
                 raise ValueError("Unsupported PNG row filter")
             row = bytearray(raw[start + 1:start + 1 + stride])
+            if mode in (0, 2):
+                # None is unchanged; Up adds the preceding reconstructed row.
+                # A zero Up residual needs a copy so decoded rows never alias.
+                if mode == 2:
+                    row = (bytearray((a + b) & 255 for a, b in zip(row, previous))
+                           if any(row) else previous.copy())
+                self.rows.append(row)
+                previous = row
+                continue
             for i in range(stride):
                 left = row[i - self.channels] if i >= self.channels else 0
                 up = previous[i]
@@ -85,6 +101,8 @@ class PNG:
             previous = row
 
     def pixel(self, x, y):
+        if not self._pixels_decoded:
+            raise ValueError("PNG pixel data was not decoded")
         at = x * self.channels
         channels = self.rows[y][at:at + self.channels]
         if self.channels == 4 and channels[3] != 255:

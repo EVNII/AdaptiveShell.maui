@@ -20,6 +20,30 @@ public static class ElementExtensions
         return WaitForAny(driver, ResolveTimeout(timeoutSeconds), MobileBy.AccessibilityId(id), MobileBy.Id(id));
     }
 
+    // Keep text reads inside the same polling deadline as native lookup. A system
+    // ANR dialog or replacement node must not turn a successful lookup into a stale read.
+    public static string WaitForAccessibilityIdText(
+        this AppiumDriver driver, string id, Func<string, bool> matches, int timeoutSeconds = 0)
+    {
+        var wait = new WebDriverWait(driver, TimeSpan.FromSeconds(ResolveTimeout(timeoutSeconds)));
+        wait.IgnoreExceptionTypes(typeof(NoSuchElementException), typeof(NotFoundException),
+            typeof(StaleElementReferenceException));
+        return wait.Until(d =>
+        {
+            DismissAnrDialogs(driver);
+            foreach (var locator in new[] { MobileBy.AccessibilityId(id), MobileBy.Id(id) })
+            {
+                foreach (var element in d.FindElements(locator))
+                {
+                    if (!element.Displayed || !element.Enabled) continue;
+                    var text = element.Text;
+                    if (matches(text)) return text;
+                }
+            }
+            return null;
+        })!;
+    }
+
     public static AppiumElement WaitFor(
         this AppiumDriver driver, By by, int timeoutSeconds = 0)
     {
@@ -46,10 +70,14 @@ public static class ElementExtensions
             {
                 try
                 {
-                    var element = d.FindElement(locator);
-                    if (element.Displayed)
+                    // One AutomationId can belong to multiple native nodes.
+                    // Keep locator order and require the actual Displayed value.
+                    foreach (var element in d.FindElements(locator))
                     {
-                        return element;
+                        if (element.Displayed)
+                        {
+                            return element;
+                        }
                     }
                 }
                 catch (NoSuchElementException)

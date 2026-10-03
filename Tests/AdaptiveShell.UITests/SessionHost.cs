@@ -1,8 +1,6 @@
 using NUnit.Framework;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Appium;
-using System.Xml.Linq;
-using System.Text.Json;
 
 namespace AdaptiveShell.UITests;
 
@@ -31,16 +29,6 @@ public class SessionHost
             {
                 Driver.WaitForAccessibilityId("home", 30);
                 Shots.Save(Driver, "launch", 1);
-                if (AppiumSetup.Platform == "ios" && AppiumSetup.Form == "duo")
-                {
-                    var results = Path.Combine(AppiumSetup.RepoRoot, "TestResults");
-                    XDocument.Parse(Driver.PageSource).Save(Path.Combine(results, "duo-launch.xml"));
-                    File.WriteAllText(Path.Combine(results, "duo-active-app.json"),
-                        JsonSerializer.Serialize(Driver.ExecuteScript("mobile:activeAppInfo")));
-                    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-                    File.WriteAllText(Path.Combine(results, "duo-screens.json"),
-                        client.GetStringAsync("http://127.0.0.1:8100/wda/screens").GetAwaiter().GetResult());
-                }
                 return;
             }
             catch (WebDriverTimeoutException)

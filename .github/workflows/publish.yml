@@ -199,6 +199,21 @@ jobs:
                       p = os.path.join(root, f)
                       z.write(p, os.path.relpath(p, work))
 
+          with zipfile.ZipFile(nupkg) as z:
+              assert z.testzip() is None, 'Package ZIP is corrupt'
+              metadata = ET.fromstring(z.read(os.path.basename(nuspec_path))).find(f'{{{NS}}}metadata')
+              assert metadata.find(f'{{{NS}}}version').text == os.environ['VERSION'], 'Package version differs'
+              assert metadata.find(f'{{{NS}}}id').text == 'AdaptiveShell.Maui', 'Package ID differs'
+              android = {p.split('/')[1] for p in z.namelist()
+                         if p.startswith('lib/net10.0-android') and p.endswith('/AdaptiveShell.dll')}
+              assert len(android) == 1, 'Android assembly missing or duplicated'
+              expected = android | {'net10.0-ios26.5', 'net10.0-maccatalyst26.5', 'net10.0-windows10.0.19041.0'}
+              actual = {p.split('/')[1] for p in z.namelist() if p.startswith('lib/') and p.endswith('/AdaptiveShell.dll')}
+              assert actual == expected, f'Platform assemblies differ: {actual}'
+              for tfm in expected:
+                  for extension in ('dll', 'xml'):
+                      assert len(z.read(f'lib/{tfm}/AdaptiveShell.{extension}')) > 0, f'Missing {tfm} {extension}'
+
           print(f'Merged {merged} into {nupkg}')
           EOF
 

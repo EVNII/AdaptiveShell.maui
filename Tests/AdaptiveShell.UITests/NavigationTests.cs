@@ -24,9 +24,10 @@ public class NavigationTests : BaseTest
         var counter = Driver.WaitForAccessibilityId("counterBtn");
         counter.Click();
 
-        // 点击触发重渲染后原引用可能失效,重新取一次再断言
-        var updated = Driver.WaitForAccessibilityId("counterBtn");
-        Assert.That(updated.Text, Does.Contain("1"),
+        // Read the actual updated text after the one click, within the original lookup deadline.
+        var updatedText = Driver.WaitForAccessibilityIdText("counterBtn",
+            text => text.Contains("1", StringComparison.Ordinal));
+        Assert.That(updatedText, Does.Contain("1"),
             "Counter button text should update after clicking.");
     }
 
@@ -69,11 +70,13 @@ public class NavigationTests : BaseTest
         }
 
         var back = Driver.FindByAccessibilityIdOrDefault("Back", 5)
-            ?? Driver.FindByAccessibilityIdOrDefault("媒体", 5);
+            ?? Driver.FindByAccessibilityIdOrDefault("媒体", 5)
+            ?? (AppiumSetup.Platform == "ios"
+                ? Driver.FindByAccessibilityIdOrDefault("BackButton", 5)
+                : null);
         if (back is null && AppiumSetup.Platform is "ios" or "maccatalyst")
         {
-            // iOS 26+ 的返回按钮是 chevron 样式,无障碍名既不是 "Back" 也不是前一页标题,
-            // 退化为导航栏第一个按钮
+            // Older navigation bars may expose their Back button without a stable identifier.
             back = Driver.FindOrDefault(
                 By.XPath("//XCUIElementTypeNavigationBar//XCUIElementTypeButton[1]"), 5);
         }

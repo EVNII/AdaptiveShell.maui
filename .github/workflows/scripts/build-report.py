@@ -16,13 +16,19 @@ JOB_LABELS = {
     "uitest-ios-18": "iOS 18",
     "uitest-ios-26": "iOS 26",
     "uitest-ios-27": "iOS 27 (experimental)",
-    "uitest-ios-27-1-duo": "iOS 27.1 · iPhone Duo (Xcode 27.1 beta)",
     "uitest-android": "Android",
     "uitest-windows": "Windows",
     "uitest-maccatalyst": "MacCatalyst (experimental)",
 }
-DUO_ARTIFACT_NAME = "shots-ios27.1-duo-iPhoneDuo"
-DUO_JOB_KEY = "uitest-ios-27-1-duo"
+LANDING_SHOT_LABELS = {
+    "40-landing-theme-light": "Landing page · 浅色",
+    "41-landing-theme-dark": "Landing page · 深色",
+    "42-landing-theme-light-restored": "Landing page · 恢复浅色",
+    "43-landing-dark-music-child-clicked": "深色 · 音乐子页面（已点击）",
+    "44-landing-dark-music-returned": "深色 · 从音乐返回 Landing page",
+    "45-landing-dark-photos-child-clicked": "深色 · 相册子页面（已点击）",
+    "46-landing-dark-photos-returned": "深色 · 从相册返回 Landing page",
+}
 
 
 def trx_result(artifact_dir: Path) -> dict:
@@ -85,9 +91,53 @@ def trx_result(artifact_dir: Path) -> dict:
 
 
 def cell_result(artifact_dir: Path, job_result: str | None = None) -> dict:
+    report = platform_result(artifact_dir, job_result)
+    if artifact_dir.name.startswith("shots-android-api"):
+        raw_theme_result(artifact_dir, report, "android-system-bars-checks.json",
+                         "verify_android_system_bars.py", "visibility_status", "Android 状态栏与系统导航键")
+    if ((artifact_dir.name.startswith("shots-android-api") and artifact_dir.name.endswith("-compact"))
+            or (artifact_dir.name.startswith("shots-ios") and "-compact-" in artifact_dir.name)):
+        raw_theme_result(artifact_dir, report, "landing-theme-checks.json",
+                         "verify_landing_theme.py", "color_status", "Landing page 背景、入口图标、文字和深色子页面")
+    return report
+
+
+def raw_theme_result(artifact_dir: Path, report: dict, filename: str,
+                     script: str, status_key: str, label: str) -> None:
+    """汇总和下载后的原始证据均需通过；缺失深色 landing 不能显示绿灯。"""
+    def validate(checks: dict) -> None:
+        expected = {"analyses": 3, "matches": 3, "mismatches": 0, "errors": 0}
+        if any(type(checks["summary"][key]) is not int or checks["summary"][key] != value
+               for key, value in expected.items()):
+            raise ValueError("三阶段核对未全部通过")
+        results = checks["results"]
+        if (not isinstance(results, list) or len(results) != 3
+                or not isinstance(checks["errors"], list) or checks["errors"]
+                or {result["stage"] for result in results} != {"light", "dark", "light-restored"}
+                or any(result[status_key] != "match" for result in results)):
+            raise ValueError("缺少完整的浅色、深色、恢复浅色证据")
+
+    try:
+        paths = sorted(artifact_dir.rglob(filename))
+        if len(paths) != 1:
+            raise ValueError("缺少或存在多个截图核对结果")
+        validate(json.loads(paths[0].read_text(encoding="utf-8-sig")))
+        verifier = Path(__file__).resolve().parents[3] / "Tests/AdaptiveShell.UITests/Scripts" / script
+        verified = subprocess.run([sys.executable, str(verifier), str(artifact_dir), "--strict"],
+                                  capture_output=True, text=True, timeout=60)
+        if verified.returncode != 0:
+            raise ValueError("下载后的原始截图、原生坐标或导航证据未通过重新核对")
+        validate(json.loads(verified.stdout))
+        detail = f"{label}：3/3 通过（浅色、深色、恢复浅色）"
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired) as error:
+        report["result"] = "failure"
+        detail = f"{label}：未通过；{error}"
+    previous = report.get("appearance_detail", "")
+    report["appearance_detail"] = (previous + "；" if previous else "") + detail
+
+
+def platform_result(artifact_dir: Path, job_result: str | None = None) -> dict:
     report = trx_result(artifact_dir)
-    if artifact_dir.name == DUO_ARTIFACT_NAME:
-        return duo_result(artifact_dir, report, job_result)
     if artifact_dir.name == "shots-windows":
         return windows_result(artifact_dir, report, job_result)
     if artifact_dir.name != "shots-maccatalyst":
@@ -123,48 +173,6 @@ def cell_result(artifact_dir: Path, job_result: str | None = None) -> dict:
         report["result"] = "failure"
         previous = report["detail"]
         report["detail"] = (previous + "；" if previous else "") + f"Mac E2E job 为 {job_result}，完整门禁未通过"
-    return report
-
-
-def validate_duo_checks(checks: dict) -> None:
-    summary = checks["summary"]
-    expected = {"analyses": 4, "matches": 4, "mismatches": 0, "errors": 0}
-    if any(type(summary[key]) is not int or summary[key] != value
-           for key, value in expected.items()):
-        raise ValueError("iPhone Duo 原生证据未完整通过 4 个阶段")
-    results = checks["results"]
-    if (not isinstance(results, list) or len(results) != 4
-            or not isinstance(checks["errors"], list) or checks["errors"]
-            or {result["stage"] for result in results} != {"launch", "light", "dark", "light-restored"}
-            or any(result["evidence_status"] != "match" for result in results)):
-        raise ValueError("缺少完整的启动、浅色、深色、恢复浅色 iPhone Duo 原生证据")
-
-
-def duo_result(artifact_dir: Path, report: dict, job_result: str | None) -> dict:
-    checks = sorted(artifact_dir.rglob("duo-checks.json"))
-    try:
-        if len(checks) != 1:
-            raise ValueError("缺少或存在多个 iPhone Duo 原生证据核对结果")
-        validate_duo_checks(json.loads(checks[0].read_text(encoding="utf-8-sig")))
-        # 绿色汇总不足以证明模型、SDK、双屏和页面截图仍然存在且一致。
-        verifier = Path(__file__).with_name("verify-duo-evidence.py")
-        verified = subprocess.run([sys.executable, str(verifier), str(artifact_dir), "--strict"],
-                                  capture_output=True, text=True, timeout=60)
-        if verified.returncode != 0:
-            raise ValueError("下载后的 iPhone Duo 原始证据未通过重新核对")
-        validate_duo_checks(json.loads(verified.stdout))
-        report["appearance_detail"] = "iPhone Duo 原生证据：4/4 通过（启动、浅色、深色、恢复浅色）"
-    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired) as error:
-        report["result"] = "failure"
-        report["appearance_detail"] = f"iPhone Duo 原生证据：未通过；{error}"
-    if report["result"] not in ("success", "failure"):
-        report["result"] = "failure"
-        previous = report["detail"]
-        report["detail"] = (previous + "；" if previous else "") + "iPhone Duo TRX 未确认成功，完整门禁未通过"
-    if job_result != "success":
-        report["result"] = "failure"
-        previous = report["detail"]
-        report["detail"] = (previous + "；" if previous else "") + f"iPhone Duo E2E job 为 {job_result}，完整门禁未通过"
     return report
 
 
@@ -222,17 +230,13 @@ def main() -> None:
         for artifact_dir in sorted(shots_root.iterdir()):
             if not artifact_dir.is_dir():
                 continue
-            pngs = sorted(artifact_dir.rglob("*.png"))
-            if artifact_dir.name == DUO_ARTIFACT_NAME:
-                job_key = DUO_JOB_KEY
-            else:
-                job_key = "uitest-windows" if artifact_dir.name == "shots-windows" else "uitest-maccatalyst"
+            # Keep provider comparison PNGs in the downloadable evidence, while
+            # the gallery shows the original screenshots used by the UI checks.
+            pngs = sorted(png for png in artifact_dir.rglob("*.png")
+                          if "provider-evidence" not in png.relative_to(artifact_dir).parts)
+            job_key = "uitest-windows" if artifact_dir.name == "shots-windows" else "uitest-maccatalyst"
             job_result = needs.get(job_key, {}).get("result")
             cells[artifact_dir.name] = (pngs, cell_result(artifact_dir, job_result))
-    if DUO_JOB_KEY in needs and DUO_ARTIFACT_NAME not in cells:
-        # 缺少整个必需 artifact 也必须列出失败 cell，不能从报告中消失。
-        missing = shots_root / DUO_ARTIFACT_NAME
-        cells[DUO_ARTIFACT_NAME] = ([], cell_result(missing, needs[DUO_JOB_KEY].get("result")))
 
     md = ["# AdaptiveShell E2E 报告", "",
           f"- 运行: {run_url}", f"- commit: `{sha}`", "", "## Job 状态", ""]
@@ -281,10 +285,14 @@ def main() -> None:
             html_parts.append(f"<p>{html.escape(report['appearance_detail'])}</p>")
         for png in pngs:
             rel = png.relative_to(root).as_posix()
-            label = html.escape(png.stem)
+            label = html.escape(LANDING_SHOT_LABELS.get(png.stem, png.stem))
             md.append(f"![{label}]({rel})")
-            html_parts.append(
-                f"<a href='{rel}'><img src='{rel}' alt='{label}' title='{label}'></a>")
+            picture = f"<a href='{rel}'><img src='{rel}' alt='{label}' title='{label}'></a>"
+            if png.stem in LANDING_SHOT_LABELS:
+                html_parts.append(f"<figure style='display:inline-block;vertical-align:top;margin:4px;max-width:320px'>"
+                                  f"{picture}<figcaption>{label}</figcaption></figure>")
+            else:
+                html_parts.append(picture)
         md.append("")
         html_parts.append("</section>")
 

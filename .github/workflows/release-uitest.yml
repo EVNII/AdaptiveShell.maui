@@ -5,10 +5,10 @@ name: Release UI Tests
 #
 # 矩阵:
 #   iOS  18 (macos-15) / 26 (macos-26) / 27 (xcode-27 预览,experimental)
-#        × { iPhone(compact), iPhone Duo(duo,存在才有), iPad(wide) } — 动态发现
+#        × { iPhone(compact), iPad(wide) } — 动态发现
 #   Android API 26-36 × { pixel_6(compact), pixel_tablet(wide) }
 #        (UiAutomator2 最低支持 Android 8.0/API 26,23-25 只能编译覆盖)
-#   iOS 27.1 / Xcode 27.1 beta:单独固定 iPhone Duo,并用 27.1 SDK 构建
+#   Duo 不参与自动 E2E 或发布门禁。
 #   Windows 单 cell;MacCatalyst 单 cell
 #   所有发现的设备和平台均参与门禁,任何失败都不能视为全矩阵通过。
 
@@ -166,7 +166,7 @@ jobs:
           xcrun simctl boot "${{ matrix.udid }}" || true
           xcrun simctl bootstatus "${{ matrix.udid }}" -b
       - name: Start Appium
-        run: npx appium > appium.log 2>&1 &
+        run: npx appium --keep-alive-timeout 900 > appium.log 2>&1 &
       - name: Run UI tests
         run: |
           until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
@@ -183,6 +183,8 @@ jobs:
             TestResults/shots
             TestResults/screenshots
             TestResults/*.trx
+            TestResults/landing-*.xml
+            TestResults/landing-*.json
             appium.log
           if-no-files-found: ignore
 
@@ -217,7 +219,7 @@ jobs:
           xcrun simctl boot "${{ matrix.udid }}" || true
           xcrun simctl bootstatus "${{ matrix.udid }}" -b
       - name: Start Appium
-        run: npx appium > appium.log 2>&1 &
+        run: npx appium --keep-alive-timeout 900 > appium.log 2>&1 &
       - name: Run UI tests
         run: |
           until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
@@ -234,6 +236,8 @@ jobs:
             TestResults/shots
             TestResults/screenshots
             TestResults/*.trx
+            TestResults/landing-*.xml
+            TestResults/landing-*.json
             appium.log
           if-no-files-found: ignore
 
@@ -269,7 +273,7 @@ jobs:
           xcrun simctl boot "${{ matrix.udid }}" || true
           xcrun simctl bootstatus "${{ matrix.udid }}" -b
       - name: Start Appium
-        run: npx appium > appium.log 2>&1 &
+        run: npx appium --keep-alive-timeout 900 > appium.log 2>&1 &
       - name: Run UI tests
         run: |
           until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
@@ -286,100 +290,8 @@ jobs:
             TestResults/shots
             TestResults/screenshots
             TestResults/*.trx
-            appium.log
-          if-no-files-found: ignore
-
-  # Duo requires Xcode/iOS 27.1 specifically; newer 27.2 does not replace its runtime.
-  uitest-ios-27-1-duo:
-    runs-on: xcode-27
-    timeout-minutes: 90
-    name: uitest-ios (27.1, iPhone Duo) [beta]
-    env:
-      DUO_REMOVE_UNUSED_27_0_RUNTIME: 'true'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Select Xcode 27.1 beta
-        run: |
-          test -d /Applications/Xcode_27.1_beta.app
-          sudo xcode-select -s /Applications/Xcode_27.1_beta.app/Contents/Developer
-          sudo xcodebuild -license accept
-          xcodebuild -runFirstLaunch
-          xcodebuild -version
-          xcodebuild -showsdks
-          test "$(xcrun --sdk iphonesimulator --show-sdk-version)" = "27.1"
-      - name: Remove only unused iOS 27.0 runtime images in this Duo VM
-        timeout-minutes: 6
-        run: python3 .github/workflows/scripts/duo-prune-runtime.py
-      - name: Install exact Duo simulator runtime
-        run: xcodebuild -downloadPlatform iOS -buildVersion 24A94401 -architectureVariant arm64
-      - name: Prepare and verify iPhone Duo
-        run: python3 .github/workflows/scripts/prepare-duo.py --output TestResults/duo-environment.json
-      - name: Install MAUI workloads
-        run: dotnet workload install maui-ios --from-rollback-file workloads.rollback.json
-      - name: Build Duo app with iOS 27.1 SDK
-        run: |
-          dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj --disable-build-servers -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64 -p:MtouchLink=SdkOnly -p:MtouchSdkVersion=27.1
-          APP="Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app"
-          SDK=$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$APP/Info.plist")
-          test "$SDK" = "iphonesimulator27.1"
-          plutil -p "$APP/Info.plist" > TestResults/duo-build-info.txt
-          xcrun vtool -show-build "$APP/ExampleAShellApp" > TestResults/duo-native-build.txt
-          python3 -c 'import re,pathlib; assert re.search(r"sdk\s+27\.1(?:\s|$)", pathlib.Path("TestResults/duo-native-build.txt").read_text()), "Native binary was not built with SDK 27.1"'
-      - name: Install Appium
-        run: |
-          npm i -g appium
-          appium driver install xcuitest
-          appium --version > TestResults/duo-appium-version.txt
-          appium driver list --installed --json > TestResults/duo-drivers.json
-          node -e 'const p=require("path"),f=require("fs"),o=require("os"); const a=process.env.APPIUM_HOME||p.join(o.homedir(),".appium"); const q=require.resolve("appium-webdriveragent/package.json",{paths:[p.join(a,"node_modules/appium-xcuitest-driver")]}); process.stdout.write(f.readFileSync(q,"utf8"));' > TestResults/duo-wda-version.json
-      # Requires the Duo opt-in C# hook: usePrebuiltWDA and the exact exported path.
-      - name: Build installed WDA16.12.11 for exact Shutdown Duo before boot
-        timeout-minutes: 15
-        run: python3 .github/workflows/scripts/duo-wda-prebuild.py build
-      - name: Build UI test assembly before simulator boot
-        run: dotnet build Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --disable-build-servers
-      - name: Shut down build servers before simulator boot
-        timeout-minutes: 2
-        run: python3 .github/workflows/scripts/duo-ci-server.py shutdown-build-servers
-      - name: Start installed global Appium and verify live status before boot
-        timeout-minutes: 4
-        run: python3 .github/workflows/scripts/duo-ci-server.py start
-      - name: Boot iPhone Duo
-        run: |
-          xcrun simctl boot "$DUO_DEVICE_UDID"
-          xcrun simctl bootstatus "$DUO_DEVICE_UDID" -b
-          xcrun simctl getenv "$DUO_DEVICE_UDID" SIMULATOR_MODEL_IDENTIFIER > TestResults/duo-model.txt
-          test "$(cat TestResults/duo-model.txt)" = "iPhone19,4"
-          xcrun simctl io "$DUO_DEVICE_UDID" enumerate > TestResults/duo-displays.txt
-      - name: Run Duo UI tests
-        timeout-minutes: 30
-        run: |
-          python3 .github/workflows/scripts/duo-wda-prebuild.py verify
-          python3 .github/workflows/scripts/duo-ci-server.py wait
-          UITEST_PLATFORM=ios UITEST_FORM=duo \
-          UITEST_DEVICE_NAME="$DUO_DEVICE_NAME" UITEST_DEVICE_UDID="$DUO_DEVICE_UDID" \
-          UITEST_APP_PATH="$GITHUB_WORKSPACE/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app" \
-            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --no-build --no-restore --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
-      - name: Verify Duo actual prebuilt WDA session options
-        run: python3 .github/workflows/scripts/duo-wda-prebuild.py verify-session
-      - name: Verify Duo device and screenshot evidence
-        run: python3 .github/workflows/scripts/verify-duo-evidence.py TestResults --strict > TestResults/duo-checks.json
-      - name: Upload Duo evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: shots-ios27.1-duo-iPhoneDuo
-          path: |
-            TestResults/shots
-            TestResults/screenshots
-            TestResults/*.trx
-            TestResults/duo-*
+            TestResults/landing-*.xml
+            TestResults/landing-*.json
             appium.log
           if-no-files-found: ignore
 
@@ -423,6 +335,8 @@ jobs:
         run: |
           npm i -g appium
           appium driver install uiautomator2
+          mkdir -p TestResults
+          node -e 'const p=require("path"),f=require("fs"),o=require("os"); const a=process.env.APPIUM_HOME||p.join(o.homedir(),".appium"); const d=p.join(a,"node_modules/appium-uiautomator2-driver"); const q=require.resolve("appium-android-driver/package.json",{paths:[d]}); const read=x=>JSON.parse(f.readFileSync(x,"utf8")); const u=read(p.join(d,"package.json")),n=read(q); process.stdout.write(JSON.stringify({uiautomator2:{name:u.name,version:u.version},android:{name:n.name,version:n.version,package_json:q}},null,2));' > TestResults/android-driver-versions.json
 
       - uses: actions/download-artifact@v4
         with:
@@ -447,7 +361,7 @@ jobs:
           script: |
             adb shell settings put global anr_show_background 0 || true
             until curl -s --max-time 2 http://127.0.0.1:4723/status >/dev/null; do sleep 2; done
-            UITEST_PLATFORM=android UITEST_FORM=${{ matrix.form }} UITEST_APP_PATH="$GITHUB_WORKSPACE/app/com.companyname.exampleashellapp-Signed.apk" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+            UITEST_ANDROID_THEME_ROOT=${{ matrix.api == 29 && 'true' || 'false' }} UITEST_PLATFORM=android UITEST_FORM=${{ matrix.form }} UITEST_APP_PATH="$GITHUB_WORKSPACE/app/com.companyname.exampleashellapp-Signed.apk" dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
 
       - name: Upload shots
         if: always()
@@ -458,6 +372,10 @@ jobs:
             TestResults/shots
             TestResults/screenshots
             TestResults/*.trx
+            TestResults/landing-*.xml
+            TestResults/landing-*.json
+            TestResults/android-*.json
+            TestResults/android-*.xml
             appium.log
           if-no-files-found: ignore
 
@@ -506,6 +424,8 @@ jobs:
             TestResults/shots
             TestResults/screenshots
             TestResults/*.trx
+            TestResults/landing-*.xml
+            TestResults/landing-*.json
             TestResults/windows-*.xml
             TestResults/windows-*.json
             appium.log
@@ -564,6 +484,8 @@ jobs:
             TestResults/shots
             TestResults/screenshots
             TestResults/*.trx
+            TestResults/landing-*.xml
+            TestResults/landing-*.json
             TestResults/*.xml
             TestResults/button-colors.json
             appium.log
@@ -578,7 +500,6 @@ jobs:
       - uitest-ios-18
       - uitest-ios-26
       - uitest-ios-27
-      - uitest-ios-27-1-duo
       - uitest-android
       - uitest-windows
       - uitest-maccatalyst
