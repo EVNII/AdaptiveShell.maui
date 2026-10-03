@@ -101,12 +101,12 @@ CI (`.github/workflows/uitest.yml`) runs Android (phone + tablet emulator matrix
 
 Releases are gated on a full E2E matrix that runs on the **public repo** ([EVNII/AdaptiveShell.maui](https://github.com/EVNII/AdaptiveShell.maui), where GitHub Actions is free) via `.github/workflows/release-uitest.yml`, triggered on every sync to `main`:
 
-- **iOS** 18 (macos-15) / 26 (macos-26) / 27 (xcode-27 preview, experimental) × { iPhone (compact), iPhone Duo (when available), iPad (wide) } — devices are discovered dynamically from the installed simulator runtimes
-- **iPhone Duo** has a dedicated required cell using Xcode 27.1 beta, the exact iOS 27.1 runtime, and an app rebuilt with SDK 27.1. Missing Duo support fails the cell instead of omitting it. This runs the navigation and theme tests in the simulator's initial pose; fold transitions are not covered.
+- **iOS** 18 (macos-15) / 26 (macos-26) / 27 (xcode-27 preview, experimental) × { iPhone (compact), iPad (wide) } — devices are discovered dynamically from the installed simulator runtimes
+- **iPhone Duo** is excluded from automatic E2E and the release gate; this release does not claim Duo E2E validation.
 - **Android** API 26–36 (Appium UiAutomator2's floor is Android 8.0/API 26; API 23–25 remain compile-level coverage) × { phone, tablet }
 - **Windows** single cell; **Mac Catalyst** single native cell.
 
-The gate: `publish.yml`'s `release-gate` job waits for the matrix run matching the tagged commit and blocks the NuGet push unless every required cell is green, including the preview and beta cells. Missing required environment or evidence fails validation; platform-specific test exclusions remain explicit in the complete TRX records.
+The gate: `publish.yml`'s `release-gate` job waits for the matrix run matching the tagged commit and blocks the NuGet push unless every required cell is green, including the iOS 27 preview and Mac Catalyst cells. Missing required environment or evidence fails validation; platform-specific test exclusions remain explicit in the complete TRX records.
 
 Screenshots are captured at key steps in every test (`Shot(...)` in `Tests/AdaptiveShell.UITests/BaseTest.cs`), uploaded per cell as artifacts, and assembled into a report published to GitHub Pages: <https://evnii.github.io/AdaptiveShell.maui/>.
 
