@@ -278,7 +278,10 @@ def main() -> None:
         for artifact_dir in sorted(shots_root.iterdir()):
             if not artifact_dir.is_dir():
                 continue
-            pngs = sorted(artifact_dir.rglob("*.png"))
+            # Keep provider comparison PNGs in the downloadable evidence, while
+            # the gallery shows the original screenshots used by the UI checks.
+            pngs = sorted(png for png in artifact_dir.rglob("*.png")
+                          if "provider-evidence" not in png.relative_to(artifact_dir).parts)
             if artifact_dir.name == DUO_ARTIFACT_NAME:
                 job_key = DUO_JOB_KEY
             else:
