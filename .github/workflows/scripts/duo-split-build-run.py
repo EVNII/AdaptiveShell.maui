@@ -528,6 +528,22 @@ def boot_after_testhost(marker, deadline):
         if code != 0:
             raise RuntimeError(f"Native boot proof failed: {filename}, exit {code}")
         return (RESULTS / filename).read_text(encoding="utf-8").strip()
+    # Same actual command and30s allowance, after the real TestHost marker
+    # and within the original1200s clock, before simulator boot can contend.
+    xcode = native(["xcodebuild", "-version"], "duo-testhost-xcode-before-boot.txt", 30)
+    if (prepared.get("xcode", {}).get("version_output") != xcode
+            or re.fullmatch(r"Xcode 27\.1\s+Build version [A-Za-z0-9]+", xcode) is None):
+        raise ValueError("Actual preboot Xcode differs from the same prepared toolchain")
+    xcode_observation = {
+        "stage": "after-real-testhost-arrival-before-native-boot",
+        "command": ["xcodebuild", "-version"], "command_budget_seconds": 30,
+        "output_file": "duo-testhost-xcode-before-boot.txt",
+        "output_sha256": file_sha256(RESULTS / "duo-testhost-xcode-before-boot.txt"),
+        "identity": {key: marker[key] for key in
+                     ("run_id", "run_attempt", "head_sha", "device_udid", "nonce", "testhost_pid", "assembly_sha256")},
+    }
+    event("preboot-testhost-xcode-version-verified", observation=xcode_observation,
+          total_remaining_seconds=remaining(deadline))
     event("preboot-testhost-boot-begin", device_udid=udid,
           total_remaining_seconds=remaining(deadline))
     native(["xcrun", "simctl", "boot", udid], "duo-testhost-boot.txt", 60)
@@ -550,11 +566,8 @@ def boot_after_testhost(marker, deadline):
             or device_type.get("modelIdentifier") != model):
         raise ValueError("Fresh native environment is not the exact available Booted Duo")
     sdk = native(["xcrun", "--sdk", "iphonesimulator", "--show-sdk-version"], "duo-testhost-sdk-after-boot.txt", 30)
-    xcode = native(["xcodebuild", "-version"], "duo-testhost-xcode-after-boot.txt", 30)
-    if (sdk != "27.1" or prepared.get("sdk", {}).get("version") != sdk
-            or prepared.get("xcode", {}).get("version_output") != xcode
-            or re.fullmatch(r"Xcode 27\.1\s+Build version [A-Za-z0-9]+", xcode) is None):
-        raise ValueError("Selected Xcode/simulator SDK changed during boot")
+    if sdk != "27.1" or prepared.get("sdk", {}).get("version") != sdk:
+        raise ValueError("Actual postboot simulator SDK differs from the same prepared toolchain")
     screens = {}
     for match in re.finditer(r"(?ms)^\s+\((\d+)\) ([^:\n]+):\n(.*?)(?=^\s+\(\d+\) [^:\n]+:\n|^Port:|\Z)", displays):
         identifier, name, block = int(match[1]), match[2], match[3]
@@ -580,6 +593,7 @@ def boot_after_testhost(marker, deadline):
              "runtime_build": runtime["buildversion"], "device_type_identifier": device_type["identifier"],
              "bootstatus_exit_code": 0, "dual_displays_verified": True, "displays": list(screens.values()),
              "sdk_version": sdk, "xcode_version_output": xcode,
+             "xcode_version_observation": xcode_observation,
              "native_environment_sha256": file_sha256(RESULTS / "duo-testhost-native-after-boot.json"),
              "display_evidence_sha256": file_sha256(RESULTS / "duo-displays.txt")}
     atomic_json(RESULTS / "duo-testhost-boot-proof.json", proof)
@@ -932,8 +946,8 @@ def deferred_appium_identity():
     require_duo_ci_scope()
     expected = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
                 "GITHUB_REPOSITORY": "EVNII/AdaptiveShell.maui",
-                "GITHUB_REF_NAME": "codex/duo-phone-automatic",
-                "GITHUB_WORKFLOW": "Duo Phone Automatic E2E",
+                "GITHUB_REF_NAME": "codex/duo-version-before-boot",
+                "GITHUB_WORKFLOW": "Duo Version Before Boot E2E",
                 "DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED": "true"}
     if any(os.environ.get(key) != value for key, value in expected.items()):
         raise ValueError("Deferred Appium is limited to its explicit isolated hosted source")
@@ -1269,8 +1283,8 @@ def require_selection_diagnostic_identity():
             or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
             or os.environ.get("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
             or os.environ.get("GITHUB_JOB") != "uitest-ios-27-1-duo"
-            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-phone-automatic"
-            or os.environ.get("GITHUB_WORKFLOW") != "Duo Phone Automatic E2E"
+            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-version-before-boot"
+            or os.environ.get("GITHUB_WORKFLOW") != "Duo Version Before Boot E2E"
             or os.environ.get("GITHUB_WORKFLOW_SHA") != os.environ.get("GITHUB_SHA")
             or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))):
         raise ValueError("This helper is restricted to the exact current13 selection diagnostic workflow")
