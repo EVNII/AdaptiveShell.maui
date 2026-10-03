@@ -69,11 +69,13 @@ public class NavigationTests : BaseTest
         }
 
         var back = Driver.FindByAccessibilityIdOrDefault("Back", 5)
-            ?? Driver.FindByAccessibilityIdOrDefault("媒体", 5);
+            ?? Driver.FindByAccessibilityIdOrDefault("媒体", 5)
+            ?? (AppiumSetup.Platform == "ios"
+                ? Driver.FindByAccessibilityIdOrDefault("BackButton", 5)
+                : null);
         if (back is null && AppiumSetup.Platform is "ios" or "maccatalyst")
         {
-            // iOS 26+ 的返回按钮是 chevron 样式,无障碍名既不是 "Back" 也不是前一页标题,
-            // 退化为导航栏第一个按钮
+            // Older navigation bars may expose their Back button without a stable identifier.
             back = Driver.FindOrDefault(
                 By.XPath("//XCUIElementTypeNavigationBar//XCUIElementTypeButton[1]"), 5);
         }

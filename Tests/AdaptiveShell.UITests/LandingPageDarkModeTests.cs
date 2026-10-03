@@ -96,7 +96,10 @@ public class LandingPageDarkModeTests : BaseTest
     AppiumElement FindChildBack()
     {
         var back = Driver.FindByAccessibilityIdOrDefault("Back", 5)
-            ?? Driver.FindByAccessibilityIdOrDefault("媒体", 5);
+            ?? Driver.FindByAccessibilityIdOrDefault("媒体", 5)
+            ?? (AppiumSetup.Platform == "ios"
+                ? Driver.FindByAccessibilityIdOrDefault("BackButton", 5)
+                : null);
         if (back is null && AppiumSetup.Platform == "ios")
             back = Driver.FindOrDefault(By.XPath("//XCUIElementTypeNavigationBar//XCUIElementTypeButton[1]"), 5);
         Assert.That(back, Is.Not.Null, "The dark child page must expose a real native Back affordance.");
