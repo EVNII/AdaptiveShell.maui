@@ -1,4 +1,4 @@
-name: Release UI Tests
+name: Full31 Split Review
 
 # 全矩阵 E2E:发布 NuGet 的质量门禁,跑在公开仓库(标准 runner 免费不限时)。
 # 私有仓库 publish.yml 的 release-gate 会等本 workflow 对同一源 commit 的运行全绿。
@@ -13,14 +13,10 @@ name: Release UI Tests
 #   所有发现的设备和平台均参与门禁,任何失败都不能视为全矩阵通过。
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 env:
   DOTNET_NOLOGO: true
@@ -295,22 +291,26 @@ jobs:
             appium.log
           if-no-files-found: ignore
 
-  # Duo requires Xcode/iOS 27.1 specifically; newer 27.2 does not replace its runtime.
-  uitest-ios-27-1-duo:
+  # Duo uses an immutable same-run SDK27.1 producer and complete-suite consumer.
+  build-ios-27-1-duo:
+    permissions:
+      contents: read
     runs-on: xcode-27
-    timeout-minutes: 90
-    name: uitest-ios (27.1, iPhone Duo) [beta]
-    env:
-      DUO_REMOVE_UNUSED_27_0_RUNTIME: 'true'
+    timeout-minutes: 60
+    name: Produce exact SDK27.1 app and complete 13-test bundle
+    outputs:
+      dotnet_sdk: ${{ steps.pack.outputs.dotnet_sdk }}
+      manifest_sha256: ${{ steps.pack.outputs.manifest_sha256 }}
+      archive_sha256: ${{ steps.pack.outputs.archive_sha256 }}
+      artifact_id: ${{ steps.bundle.outputs.artifact-id }}
+      artifact_digest: ${{ steps.bundle.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Select Xcode 27.1 beta
+      - name: Select Xcode 27.1 beta without installing or booting a simulator
+        timeout-minutes: 10
         run: |
           test -d /Applications/Xcode_27.1_beta.app
           sudo xcode-select -s /Applications/Xcode_27.1_beta.app/Contents/Developer
@@ -319,25 +319,116 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks
           test "$(xcrun --sdk iphonesimulator --show-sdk-version)" = "27.1"
+          mkdir -p TestResults
+      - name: Install the same MAUI workload on the producer only
+        timeout-minutes: 15
+        run: dotnet workload install maui-ios --from-rollback-file workloads.rollback.json
+      - name: Build the same Duo app using SDK27.1
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj --disable-build-servers -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64 -p:MtouchLink=SdkOnly -p:MtouchSdkVersion=27.1 2>&1 | tee TestResults/duo-producer-build.log
+          APP="Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app"
+          SDK=$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$APP/Info.plist")
+          test "$SDK" = "iphonesimulator27.1"
+          codesign --verify --strict "$APP"
+          plutil -p "$APP/Info.plist" > TestResults/duo-build-info.txt
+          xcrun vtool -show-build "$APP/ExampleAShellApp" > TestResults/duo-native-build.txt
+          python3 -c 'import re,pathlib; assert re.search(r"sdk\s+27\.1(?:\s|$)", pathlib.Path("TestResults/duo-native-build.txt").read_text()), "Native binary was not built with SDK 27.1"'
+      - name: Build the current complete 13-test UI test assembly on the producer only
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          dotnet build Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --disable-build-servers 2>&1 | tee TestResults/duo-producer-test-build.log
+      - name: Shut down producer build servers
+        timeout-minutes: 2
+        run: |
+          python3 .github/workflows/scripts/duo-ci-server.py shutdown-build-servers
+          cp TestResults/duo-build-server-shutdown.txt TestResults/duo-producer-build-server-shutdown.txt
+      - name: Pack exact app/test outputs and public test package closure
+        id: pack
+        timeout-minutes: 10
+        run: python3 .github/workflows/scripts/duo-split-build-transfer.py pack --output "$RUNNER_TEMP/duo-build-bundle"
+      - name: Upload immutable build handoff
+        id: bundle
+        timeout-minutes: 10
+        uses: actions/upload-artifact@v4
+        with:
+          name: duo-split-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/duo-build-bundle
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload producer evidence even on failure
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: duo-split-producer-evidence
+          path: TestResults/duo-*
+          if-no-files-found: warn
+
+  uitest-ios-27-1-duo:
+    needs: build-ios-27-1-duo
+    permissions:
+      contents: read
+      actions: read
+    runs-on: xcode-27
+    timeout-minutes: 90
+    name: uitest-ios (27.1, iPhone Duo) [beta]
+    env:
+      DUO_REMOVE_UNUSED_27_0_RUNTIME: 'true'
+      DUO_DIAGNOSTIC_DISABLE_SPOTLIGHT_INDEXING: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ needs.build-ios-27-1-duo.outputs.dotnet_sdk }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Select Xcode 27.1 beta
+        timeout-minutes: 10
+        run: |
+          test -d /Applications/Xcode_27.1_beta.app
+          sudo xcode-select -s /Applications/Xcode_27.1_beta.app/Contents/Developer
+          sudo xcodebuild -license accept
+          xcodebuild -runFirstLaunch
+          xcodebuild -version
+          xcodebuild -showsdks
+          test "$(xcrun --sdk iphonesimulator --show-sdk-version)" = "27.1"
+          mkdir -p TestResults
+      - name: Download the exact same-run producer artifact by immutable ID
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build-ios-27-1-duo.outputs.artifact_id }}
+          # v4 ID downloads use the multiple-artifact path even for one ID.
+          merge-multiple: true
+          path: ${{ runner.temp }}/duo-build-input
+      - name: Verify and restore exact app/test outputs without build or restore
+        timeout-minutes: 10
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DUO_BUNDLE_ID: ${{ needs.build-ios-27-1-duo.outputs.artifact_id }}
+          DUO_BUNDLE_DIGEST: ${{ needs.build-ios-27-1-duo.outputs.artifact_digest }}
+          DUO_MANIFEST_SHA: ${{ needs.build-ios-27-1-duo.outputs.manifest_sha256 }}
+          DUO_ARCHIVE_SHA: ${{ needs.build-ios-27-1-duo.outputs.archive_sha256 }}
+          DUO_BUNDLE_NAME: duo-split-build-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python3 .github/workflows/scripts/duo-split-build-transfer.py consume --input "$RUNNER_TEMP/duo-build-input" --artifact-id "$DUO_BUNDLE_ID" --artifact-name "$DUO_BUNDLE_NAME" --artifact-digest "$DUO_BUNDLE_DIGEST" --manifest-sha256 "$DUO_MANIFEST_SHA" --archive-sha256 "$DUO_ARCHIVE_SHA"
+      - name: Disable only Spotlight indexing on both owned ephemeral VM volumes
+        timeout-minutes: 2
+        run: python3 .github/workflows/scripts/duo-split-build-run.py --disable-spotlight-indexing
       - name: Remove only unused iOS 27.0 runtime images in this Duo VM
         timeout-minutes: 6
         run: python3 .github/workflows/scripts/duo-prune-runtime.py
       - name: Install exact Duo simulator runtime
+        timeout-minutes: 15
         run: xcodebuild -downloadPlatform iOS -buildVersion 24A94401 -architectureVariant arm64
       - name: Prepare and verify iPhone Duo
+        timeout-minutes: 5
         run: python3 .github/workflows/scripts/prepare-duo.py --output TestResults/duo-environment.json
-      - name: Install MAUI workloads
-        run: dotnet workload install maui-ios --from-rollback-file workloads.rollback.json
-      - name: Build Duo app with iOS 27.1 SDK
-        run: |
-          dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj --disable-build-servers -c Debug -p:TargetFrameworks=net10.0-ios26.5 -p:RuntimeIdentifier=iossimulator-arm64 -p:MtouchLink=SdkOnly -p:MtouchSdkVersion=27.1
-          APP="Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app"
-          SDK=$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$APP/Info.plist")
-          test "$SDK" = "iphonesimulator27.1"
-          plutil -p "$APP/Info.plist" > TestResults/duo-build-info.txt
-          xcrun vtool -show-build "$APP/ExampleAShellApp" > TestResults/duo-native-build.txt
-          python3 -c 'import re,pathlib; assert re.search(r"sdk\s+27\.1(?:\s|$)", pathlib.Path("TestResults/duo-native-build.txt").read_text()), "Native binary was not built with SDK 27.1"'
       - name: Install Appium
+        timeout-minutes: 15
         run: |
           npm i -g appium
           appium driver install xcuitest
@@ -348,36 +439,45 @@ jobs:
       - name: Build installed WDA16.12.11 for exact Shutdown Duo before boot
         timeout-minutes: 15
         run: python3 .github/workflows/scripts/duo-wda-prebuild.py build
-      - name: Build UI test assembly before simulator boot
-        run: dotnet build Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --disable-build-servers
-      - name: Shut down build servers before simulator boot
-        timeout-minutes: 2
-        run: python3 .github/workflows/scripts/duo-ci-server.py shutdown-build-servers
-      - name: Start installed global Appium and verify live status before boot
+      - name: Start owned global Appium and verify live status before boot
         timeout-minutes: 4
-        run: python3 .github/workflows/scripts/duo-ci-server.py start
-      - name: Boot iPhone Duo
-        run: |
-          xcrun simctl boot "$DUO_DEVICE_UDID"
-          xcrun simctl bootstatus "$DUO_DEVICE_UDID" -b
-          xcrun simctl getenv "$DUO_DEVICE_UDID" SIMULATOR_MODEL_IDENTIFIER > TestResults/duo-model.txt
-          test "$(cat TestResults/duo-model.txt)" = "iPhone19,4"
-          xcrun simctl io "$DUO_DEVICE_UDID" enumerate > TestResults/duo-displays.txt
+        run: python3 .github/workflows/scripts/duo-split-build-run.py --start-appium-preboot
+      - name: Capture bounded preboot resource observations
+        timeout-minutes: 2
+        run: python3 .github/workflows/scripts/duo-split-build-run.py --resource-observation before-boot
+      - name: Upload preboot source and native environment evidence
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: duo-split-preboot-environment
+          path: |
+            TestResults/duo-*
+            appium.log
+          if-no-files-found: warn
       - name: Run Duo UI tests
-        timeout-minutes: 30
-        run: |
-          python3 .github/workflows/scripts/duo-wda-prebuild.py verify
-          python3 .github/workflows/scripts/duo-ci-server.py wait
-          UITEST_PLATFORM=ios UITEST_FORM=duo \
-          UITEST_DEVICE_NAME="$DUO_DEVICE_NAME" UITEST_DEVICE_UDID="$DUO_DEVICE_UDID" \
-          UITEST_APP_PATH="$GITHUB_WORKSPACE/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app" \
-            dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --no-build --no-restore --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
+        id: duo_original_tests
+        timeout-minutes: 25
+        env:
+          UITEST_PLATFORM: ios
+          UITEST_FORM: duo
+          UITEST_DEVICE_NAME: ${{ env.DUO_DEVICE_NAME }}
+          UITEST_DEVICE_UDID: ${{ env.DUO_DEVICE_UDID }}
+          UITEST_APP_PATH: ${{ github.workspace }}/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app
+          DUO_DIAGNOSTIC_PREBOOT_HOST: 'true'
+          DUO_DIAGNOSTIC_PREINSTALL_AUT: 'true'
+        run: python3 .github/workflows/scripts/duo-split-build-run.py
       - name: Verify Duo actual prebuilt WDA session options
         run: python3 .github/workflows/scripts/duo-wda-prebuild.py verify-session
       - name: Verify Duo device and screenshot evidence
         run: python3 .github/workflows/scripts/verify-duo-evidence.py TestResults --strict > TestResults/duo-checks.json
+      - name: Capture bounded failure health
+        if: failure()
+        timeout-minutes: 2
+        run: python3 .github/workflows/scripts/duo-split-build-run.py --health workflow-failure
       - name: Upload Duo evidence
         if: always()
+        timeout-minutes: 5
         uses: actions/upload-artifact@v4
         with:
           name: shots-ios27.1-duo-iPhoneDuo
@@ -389,7 +489,7 @@ jobs:
             TestResults/landing-*.json
             TestResults/duo-*
             appium.log
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   # ============================================================
   # Android:项目最低支持版本(API 23)起的全部 major × 手机/平板
@@ -601,9 +701,6 @@ jobs:
       - uitest-windows
       - uitest-maccatalyst
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -627,12 +724,3 @@ jobs:
           name: uitest-report
           path: report
           if-no-files-found: ignore
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: report
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
