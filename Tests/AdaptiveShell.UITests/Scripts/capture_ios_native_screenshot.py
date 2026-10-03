@@ -76,7 +76,7 @@ def main(request_path):
         runtimes=json.loads(native(['xcrun','simctl','list','runtimes','-j'],'runtimes'))
         entries=[x for x in runtimes.get('runtimes',[]) if x.get('identifier')==runtime];require(len(entries)==1 and entries[0].get('version')=='18.5' and entries[0].get('isAvailable') is True,'Exact native runtime readback required')
         proof['native_device']=device;proof['native_runtime']=entries[0]
-        help_text=native(['xcrun','simctl','help','io'],'simctl-io-help').decode();require('--display' in help_text and 'internal' in help_text and '--type' in help_text,'Installed simctl must support exact internal lossless PNG command')
+        help_text=native(['xcrun','simctl','help','io'],'simctl-io-help').decode()+Path(str(prefix)+'-simctl-io-help.stderr').read_text();require('--display' in help_text and 'internal' in help_text and '--type' in help_text,'Installed simctl must support exact internal lossless PNG command')
         png=Path(str(prefix)+'-internal.png');require(not png.exists() and not png.is_symlink(),'Native original PNG already exists')
         native(['xcrun','simctl','io',request['actual_udid'],'screenshot','--type=png','--display=internal',str(png)],'internal-screenshot')
         raw=png.read_bytes();require(len(raw)>24 and raw[:8]==b'\x89PNG\r\n\x1a\n' and raw[12:16]==b'IHDR','Native provider must produce an original readable PNG')
