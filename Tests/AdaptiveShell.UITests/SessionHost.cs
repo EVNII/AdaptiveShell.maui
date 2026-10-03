@@ -31,6 +31,7 @@ public class SessionHost
             try
             {
                 Driver.WaitForAccessibilityId("home", 30);
+                AppiumSetup.VerifyDuoCompatibilitySettings();
                 Shots.Save(Driver, "launch", 1);
                 if (AppiumSetup.Platform == "ios" && AppiumSetup.Form == "duo")
                 {
@@ -50,6 +51,7 @@ public class SessionHost
         }
 
         Driver.WaitForAccessibilityId("home");
+        AppiumSetup.VerifyDuoCompatibilitySettings();
         Shots.Save(Driver, "launch", 1);
     }
 
@@ -64,8 +66,8 @@ public class SessionHost
             || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true"
             || Environment.GetEnvironmentVariable("GITHUB_JOB") != "uitest-ios-27-1-duo"
             || Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
-            || Environment.GetEnvironmentVariable("GITHUB_REF_NAME") != "codex/duo-deferred-appium-post-suite"
-            || Environment.GetEnvironmentVariable("GITHUB_WORKFLOW") != "Duo Deferred Appium Post Suite Diagnostic")
+            || Environment.GetEnvironmentVariable("GITHUB_REF_NAME") != "codex/duo-bounded-capture"
+            || Environment.GetEnvironmentVariable("GITHUB_WORKFLOW") != "Duo Bounded Capture E2E")
             throw new InvalidOperationException("The preboot TestHost barrier requires explicit Duo CI opt-in.");
 
         static string Required(string key) => Environment.GetEnvironmentVariable(key)

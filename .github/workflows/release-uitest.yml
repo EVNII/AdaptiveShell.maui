@@ -1,4 +1,4 @@
-name: Duo Deferred Appium Post Suite Diagnostic
+name: Duo Bounded Capture E2E
 
 on:
   workflow_dispatch:
@@ -205,7 +205,7 @@ jobs:
               need(sys.platform == 'darwin' and all(os.environ.get(k) == v for k, v in {
                   'GITHUB_ACTIONS': 'true', 'RUNNER_OS': 'macOS', 'RUNNER_ENVIRONMENT': 'github-hosted',
                   'GITHUB_REPOSITORY': 'EVNII/AdaptiveShell.maui', 'GITHUB_JOB': 'uitest-ios-27-1-duo',
-                  'GITHUB_REF_NAME': 'codex/duo-deferred-appium-post-suite', 'GITHUB_WORKFLOW': 'Duo Deferred Appium Post Suite Diagnostic'
+                  'GITHUB_REF_NAME': 'codex/duo-bounded-capture', 'GITHUB_WORKFLOW': 'Duo Bounded Capture E2E'
               }.items()), 'Exact hosted Duo CI scope rejected')
               head = os.environ.get('GITHUB_SHA', '')
               need(re.fullmatch('[0-9a-f]{40}', head) and os.environ.get('GITHUB_WORKFLOW_SHA') == head, 'Workflow/source identity differs')
@@ -328,27 +328,13 @@ jobs:
           UITEST_APP_PATH: ${{ github.workspace }}/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app
           DUO_DIAGNOSTIC_PREBOOT_HOST: 'true'
           DUO_DIAGNOSTIC_PREINSTALL_AUT: 'true'
-          UITEST_DUO_POST_SUITE_SNAPSHOT: 'true'
+          UITEST_DUO_COMPATIBILITY_OPTIONS: 'true'
           UITEST_DUO_VISIBILITY_DIAGNOSTIC: 'true'
         run: python3 .github/workflows/scripts/duo-split-build-run.py
-      - name: Collect opted-in native visibility log after original tests
-        if: always()
-        timeout-minutes: 2
-        env:
-          UITEST_PLATFORM: ios
-          UITEST_FORM: duo
-          UITEST_DEVICE_UDID: ${{ env.DUO_DEVICE_UDID }}
-          UITEST_DUO_VISIBILITY_DIAGNOSTIC: 'true'
-          DUO_ORIGINAL_TEST_OUTCOME: ${{ steps.duo_original_tests.outcome }}
-        run: python3 .github/workflows/scripts/duo-collect-visibility-log.py
       - name: Verify Duo actual prebuilt WDA session options
         run: python3 .github/workflows/scripts/duo-wda-prebuild.py verify-session
       - name: Verify Duo device and screenshot evidence
         run: python3 .github/workflows/scripts/verify-duo-evidence.py TestResults --strict > TestResults/duo-checks.json
-      - name: Capture bounded failure health
-        if: failure()
-        timeout-minutes: 2
-        run: python3 .github/workflows/scripts/duo-split-build-run.py --health workflow-failure
       - name: Upload Duo evidence
         if: always()
         timeout-minutes: 5
@@ -364,3 +350,28 @@ jobs:
             TestResults/duo-*
             appium.log
           if-no-files-found: error
+      - name: Collect opted-in native visibility log after original tests
+        if: always()
+        timeout-minutes: 2
+        env:
+          UITEST_PLATFORM: ios
+          UITEST_FORM: duo
+          UITEST_DEVICE_UDID: ${{ env.DUO_DEVICE_UDID }}
+          UITEST_DUO_VISIBILITY_DIAGNOSTIC: 'true'
+          DUO_ORIGINAL_TEST_OUTCOME: ${{ steps.duo_original_tests.outcome }}
+        run: python3 .github/workflows/scripts/duo-collect-visibility-log.py
+      - name: Capture bounded failure health
+        if: failure()
+        timeout-minutes: 2
+        run: python3 .github/workflows/scripts/duo-split-build-run.py --health workflow-failure
+      - name: Upload post-suite side diagnostics
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: duo-post-suite-side-diagnostics
+          path: |
+            TestResults/duo-visibility-post
+            TestResults/duo-health-workflow-failure*
+            TestResults/duo-startup-events.jsonl
+          if-no-files-found: warn

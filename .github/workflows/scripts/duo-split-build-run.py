@@ -56,7 +56,68 @@ def start_owned(command, **kwargs):
     return process
 
 
-def signal_owned_group(process, sig):
+def bounded_client(command, *, timeout, text=False, env=None, deadline=None):
+    """File-backed owned client; timeout never enters run()'s unbounded reap."""
+    started = time.monotonic()
+    expires = started + timeout
+    if deadline is not None:
+        expires = min(expires, deadline)
+    if expires <= started:
+        raise subprocess.TimeoutExpired(command, timeout)
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    stem = RESULTS / ("duo-bounded-client-" + secrets.token_hex(12))
+    out_path, err_path = Path(str(stem) + ".stdout"), Path(str(stem) + ".stderr")
+    state = {"command": command, "timeout_seconds": timeout,
+             "started_utc": datetime.now(timezone.utc).isoformat(),
+             "scope": "owned client only; process creation and kernel scheduling cannot be interrupted",
+             "stdout_file": out_path.name, "stderr_file": err_path.name}
+    process = None
+    timed_out = False
+    try:
+        # Only regular file handles use a context manager. Never use Popen's
+        # context manager, communicate(), or a timeout-free wait() here.
+        with out_path.open("xb") as output, err_path.open("xb") as error:
+            process = start_owned(command, stdin=subprocess.DEVNULL,
+                                  stdout=output, stderr=error, env=env)
+            state.update(pid=process.pid, owned_pgid=process.pid)
+            while process.poll() is None:
+                left = expires - time.monotonic()
+                if left <= 0:
+                    timed_out = True
+                    # This new client alone is a signal target. Do not invoke
+                    # sudo recursively or wait indefinitely if it cannot exit.
+                    try:
+                        if os.getpgid(process.pid) != process.pid:
+                            raise ValueError("Owned client process-group changed")
+                        os.killpg(process.pid, signal.SIGKILL)
+                        state["owned_group_kill_requested"] = True
+                    except ProcessLookupError:
+                        pass
+                    except (OSError, ValueError) as cleanup:
+                        state["cleanup_error"] = str(cleanup)
+                    break
+                time.sleep(min(0.05, left))
+        # A regular file read does not wait for descendant-held pipe EOF.
+        with out_path.open("rb") as output, err_path.open("rb") as error:
+            stdout, stderr = output.read(4 * 1024 * 1024 + 1), error.read(4 * 1024 * 1024 + 1)
+        state["output_limit_exceeded"] = max(len(stdout), len(stderr)) > 4 * 1024 * 1024
+        if text:
+            stdout = stdout.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            stderr = stderr.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        if timed_out:
+            raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+        if state["output_limit_exceeded"]:
+            raise ValueError("Owned client response exceeds4MiB; original files retained")
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    finally:
+        state.update(timed_out=timed_out, elapsed_seconds=time.monotonic() - started,
+                     finished_utc=datetime.now(timezone.utc).isoformat(),
+                     exit_code=None if process is None else process.poll(),
+                     exit_observed=process is not None and process.returncode is not None)
+        Path(str(stem) + ".json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def signal_owned_group(process, sig, deadline=None):
     pgid = getattr(process, "_duo_owned_pgid", None)
     if pgid != process.pid or not isinstance(pgid, int) or pgid <= 1 or pgid == os.getpgrp():
         event("process-group-signal-refused", pid=process.pid, pgid=pgid)
@@ -74,9 +135,9 @@ def signal_owned_group(process, sig):
         if os.environ.get("GITHUB_ACTIONS") == "true":
             name = signal.Signals(sig).name.removeprefix("SIG")
             try:
-                completed = subprocess.run([
+                completed = bounded_client([
                     "sudo", "-n", "/bin/kill", "-s", name, "--", f"-{pgid}",
-                ], capture_output=True, text=True, timeout=3)
+                ], text=True, timeout=3, deadline=deadline)
                 event("process-group-sudo-signal", pgid=pgid, signal=name,
                       exit_code=completed.returncode, stderr=completed.stderr[-2000:])
                 return "sent" if completed.returncode == 0 else "failed"
@@ -88,47 +149,57 @@ def signal_owned_group(process, sig):
         return "failed"
 
 
-def stop_group(process, label, grace=5):
+def stop_group(process, label, grace=5, deadline=None):
     # Cleanup is diagnostic evidence: it must never prevent native capture or
     # the final summary, even if the runner denies process-group operations.
     if process is None:
-        return
+        return True
+    deadline = min(time.monotonic() + grace + 5,
+                   deadline if deadline is not None else float("inf"))
     event("stop-process-group", process=label, pgid=process.pid)
     try:
-        status = signal_owned_group(process, signal.SIGTERM)
+        status = signal_owned_group(process, signal.SIGTERM, deadline)
         if status in ("absent", "refused"):
             process.poll()
-            return
-        deadline = time.monotonic() + grace
-        while time.monotonic() < deadline:
+            return status == "absent"
+        if status != "sent":
+            return False
+        grace_deadline = min(deadline, time.monotonic() + grace)
+        while time.monotonic() < grace_deadline:
             try:
                 os.killpg(process.pid, 0)
             except ProcessLookupError:
                 process.poll()
-                return
+                return True
             except PermissionError:
                 # The group can still exist with descendants of another uid;
                 # continue to the bounded, owned-group KILL fallback.
                 break
-            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
-        signal_owned_group(process, signal.SIGKILL)
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
+            time.sleep(min(0.1, max(0, grace_deadline - time.monotonic())))
+        status = signal_owned_group(process, signal.SIGKILL, deadline)
+        if status not in ("sent", "absent"):
+            return False
+        reap_deadline = min(deadline, time.monotonic() + 2)
+        while process.poll() is None and time.monotonic() < reap_deadline:
+            time.sleep(min(0.05, max(0, reap_deadline - time.monotonic())))
+        if process.returncode is None:
             event("process-reap-timeout", process=label, pid=process.pid)
+            return False
+        return True
     except Exception as error:
         event("process-group-cleanup-error", process=label, pid=process.pid,
               type=type(error).__name__, error=str(error))
+        return False
 
 
-def probe_json(url, output, timeout=2):
+def probe_json(url, output, timeout=2, deadline=None):
     try:
         # curl --max-time is a whole-transfer deadline, including a slow body.
         # This command has no background descendants; subprocess also bounds it.
-        response = subprocess.run([
+        response = bounded_client([
             "curl", "--fail", "--silent", "--show-error", "--max-time",
             str(timeout), url,
-        ], capture_output=True, timeout=timeout)
+        ], timeout=timeout, deadline=deadline)
         if response.returncode:
             raise ValueError(response.stderr.decode("utf-8", errors="replace"))
         if len(response.stdout) > 4 * 1024 * 1024:
@@ -149,7 +220,7 @@ def wait_ready(server, url, seconds, output="duo-appium-status.json"):
             event("appium-exited-before-ready", exit_code=server.returncode)
             return False
         remaining = deadline - time.monotonic()
-        status = probe_json(url, output, timeout=min(2, remaining))
+        status = probe_json(url, output, timeout=min(2, remaining), deadline=deadline)
         value = status.get("value") if isinstance(status, dict) else None
         if isinstance(value, dict) and value.get("ready") is True:
             event("appium-ready")
@@ -184,16 +255,23 @@ def wait_test(process, seconds):
     return process.returncode
 
 
-def capture(command, filename, timeout=15):
+def capture(command, filename, timeout=15, deadline=None, fail_on_cleanup=False):
     path = RESULTS / filename
     process = None
     code = 1
+    cleanup_ok = True
+    if deadline is not None:
+        timeout = min(timeout, max(0, deadline - time.monotonic()))
+        if timeout <= 0:
+            event("native-capture-budget-exhausted", file=filename)
+            return 124
     event("native-capture-begin", command=command, timeout_seconds=timeout)
     try:
         with path.open("wb") as stream:
             process = start_owned(command, stdout=stream, stderr=subprocess.STDOUT)
             try:
-                code = process.wait(timeout=timeout)
+                code = process.wait(timeout=timeout if deadline is None else
+                                    max(0, min(timeout, deadline - time.monotonic())))
             except subprocess.TimeoutExpired:
                 code = 124
         event("native-capture-end", file=filename, exit_code=code)
@@ -202,26 +280,52 @@ def capture(command, filename, timeout=15):
         event("native-capture-error", file=filename, error=str(error))
     finally:
         if process is not None:
-            stop_group(process, filename, grace=1 if code == 124 else 0)
+            cleanup_ok = stop_group(process, filename, grace=1 if code == 124 else 0,
+                                    deadline=deadline)
+    if fail_on_cleanup and not cleanup_ok:
+        event("native-capture-cleanup-incomplete", file=filename, original_exit_code=code)
+        return 125
     return code
 
 
-def collect_native_evidence():
+def collect_native_evidence(deadline=None):
     RESULTS.mkdir(parents=True, exist_ok=True)
-    capture(["ps", "-axo", "pid,ppid,pgid,etime,state,command"], "duo-host-processes.txt", 8)
-    capture(["xcrun", "simctl", "list", "devices", "--json"], "duo-device-status.json", 8)
+    deadline = min(time.monotonic() + 30,
+                   deadline if deadline is not None else float("inf"))
+    summary = {"scope": "side evidence only; missing capture never accepts UI",
+               "budget_seconds": 30, "status": "pending", "commands": []}
+    path = RESULTS / "duo-native-capture-summary.json"
+    path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    commands = [(["ps", "-axo", "pid,ppid,pgid,etime,state,command"], "duo-host-processes.txt"),
+                (["xcrun", "simctl", "list", "devices", "--json"], "duo-device-status.json")]
     udid = os.environ.get("DUO_DEVICE_UDID")
     if udid:
-        capture(["xcrun", "simctl", "spawn", udid, "launchctl", "print", "system"],
-                "duo-simulator-services.txt", 8)
-        capture(["xcrun", "simctl", "spawn", udid, "launchctl", "list"],
-                "duo-simulator-processes.txt", 8)
+        commands.extend([(["xcrun", "simctl", "spawn", udid, "launchctl", "print", "system"],
+                          "duo-simulator-services.txt"),
+                         (["xcrun", "simctl", "spawn", udid, "launchctl", "list"],
+                          "duo-simulator-processes.txt")])
         # Independently capture native simulator pixels, without waiting for Appium.
-        capture(["xcrun", "simctl", "io", udid, "screenshot", "--type=png",
-                 str(RESULTS / "duo-native-startup.png")], "duo-native-screenshot-command.txt", 8)
+        commands.append((["xcrun", "simctl", "io", udid, "screenshot", "--type=png",
+                          str(RESULTS / "duo-native-startup.png")], "duo-native-screenshot-command.txt"))
     else:
         event("native-device-capture-skipped", reason="DUO_DEVICE_UDID not exported")
-    probe_json("http://127.0.0.1:8100/status", "duo-wda-status.json", timeout=2)
+    try:
+        for command, filename in commands:
+            code = capture(command, filename, 8, deadline=deadline, fail_on_cleanup=True)
+            summary["commands"].append({"file": filename, "exit_code": code})
+            if code != 0 or time.monotonic() >= deadline:
+                summary.update(status="incomplete", stopped_after=filename,
+                               reason="native command failed/timed out or cleanup incomplete; no later probes started")
+                return
+        left = deadline - time.monotonic()
+        if left > 0:
+            status = probe_json("http://127.0.0.1:8100/status", "duo-wda-status.json",
+                                timeout=min(2, left), deadline=deadline)
+            summary["status"] = "captured" if status is not None else "incomplete"
+        else:
+            summary.update(status="incomplete", reason="shared capture deadline exhausted")
+    finally:
+        path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
 
 def verify_prebuilt_wda_configuration(require_session=False):
@@ -302,16 +406,16 @@ def native_appium_identity(metadata, deadline=None):
     pid = metadata.get("pid")
     if type(pid) is not int or pid <= 1:
         raise ValueError("Invalid Appium PID")
-    completed = subprocess.run(
+    completed = bounded_client(
         ["ps", "-p", str(pid), "-o", "pid=,pgid=,uid=,lstart=,command="],
-        capture_output=True, text=True, timeout=5 if deadline is None else min(5, remaining(deadline)),
+        text=True, timeout=5, deadline=deadline,
         env={**os.environ, "LC_ALL": "C", "TZ": "UTC"})
     if completed.returncode != 0 or len(completed.stdout.strip().splitlines()) != 1:
         raise ValueError("Cannot establish one live native Appium process")
     return parse_owned_appium_identity(metadata, completed.stdout, os.getuid())
 
 
-def stop_recorded_appium():
+def stop_recorded_appium(deadline=None):
     """Only this CI-owned server; fresh PID/PGID/UID/argv/birth proof before each signal."""
     outcome = {"scope": "owned Appium cleanup only; no broad process-name signals"}
     try:
@@ -323,7 +427,9 @@ def stop_recorded_appium():
         if not isinstance(metadata.get("native_start_token"), str):
             raise ValueError("No preboot native birth token; refusing cross-step PID cleanup")
         for sig in (signal.SIGTERM, signal.SIGKILL):
-            proof = native_appium_identity(metadata)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(["ps", "owned-appium-identity"], 0)
+            proof = native_appium_identity(metadata, deadline)
             event("recorded-appium-signal-proof", signal=int(sig), **proof)
             # Reuse the D6 owned-group signal implementation, including its
             # bounded CI-only permission fallback, with an independently proved leader.
@@ -332,17 +438,18 @@ def stop_recorded_appium():
             leader = ProvedLeader()
             leader.pid = proof["pid"]
             leader._duo_owned_pgid = proof["pgid"]
-            status = signal_owned_group(leader, sig)
+            status = signal_owned_group(leader, sig, deadline)
             outcome.update(status=status, pid=proof["pid"], last_signal=int(sig))
             if status in ("absent", "refused", "failed"):
                 break
             if sig == signal.SIGTERM:
-                time.sleep(1)
+                time.sleep(1 if deadline is None else min(1, max(0, deadline - time.monotonic())))
         event("recorded-appium-stop-complete", **outcome)
     except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
         outcome.update(status="refused-or-already-exited", error=str(error))
         event("recorded-appium-stop-refused", **outcome)
     (RESULTS / "duo-appium-cleanup.json").write_text(json.dumps(outcome, indent=2), encoding="utf-8")
+    return outcome.get("status") in ("sent", "absent")
 
 
 def verify_full_suite():
@@ -725,14 +832,30 @@ def main():
     finally:
         # Keep failure health in the separate bounded workflow step. Stop the
         # actual test and proved preboot server first; never hide the original failure.
+        cleanup_started = time.monotonic()
+        cleanup_deadline = cleanup_started + 30
+        cleanup_ok = True
+        # Persist the original outcome BEFORE any extra native cleanup/capture.
+        # A missing final update leaves explicit pending side evidence, not UI success.
+        (RESULTS / "duo-full-diagnostic.json").write_text(json.dumps({
+            "phase": phase, "exit_code": exit_code, "test_budget_seconds": 1200,
+            "side_cleanup_status": "pending", "side_cleanup_budget_seconds": 30,
+        }, indent=2), encoding="utf-8")
         try:
-            stop_group(test, "dotnet-test", grace=1)
+            cleanup_ok = stop_group(test, "dotnet-test", grace=1, deadline=cleanup_deadline)
             if exit_code != 0:
-                stop_recorded_appium()
+                cleanup_ok = stop_recorded_appium(cleanup_deadline) and cleanup_ok
         finally:
             # Independent finally: cleanup denial must not skip native evidence.
             try:
-                collect_native_evidence()
+                if cleanup_ok and time.monotonic() < cleanup_deadline:
+                    collect_native_evidence(cleanup_deadline)
+                else:
+                    (RESULTS / "duo-native-capture-summary.json").write_text(json.dumps({
+                        "status": "incomplete", "commands": [], "budget_seconds": 30,
+                        "reason": "owned cleanup incomplete or shared deadline expired; no extra native probes started",
+                        "scope": "side evidence only; missing capture never accepts UI",
+                    }, indent=2), encoding="utf-8")
             except Exception as capture_error:
                 event("native-capture-unexpected-error", type=type(capture_error).__name__,
                       error=str(capture_error))
@@ -743,6 +866,8 @@ def main():
         result = {"scope": "bounded complete-suite diagnostic; strict raw four-phase gate remains required",
                   "phase": phase, "exit_code": exit_code,
                   "appium_ready_budget_seconds": 180, "test_budget_seconds": 1200,
+                  "side_cleanup_budget_seconds": 30, "owned_cleanup_complete": cleanup_ok,
+                  "side_cleanup_elapsed_seconds": time.monotonic() - cleanup_started,
                   "budget_scope": "one complete process: TestHost/barrier/actual boot/Appium session/all tests",
                   "appium_start_path": ("same owned global Appium; after verified native AUT install and before TestHost release"
                                         if os.environ.get("DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED") == "true"
@@ -774,13 +899,19 @@ def health(stage):
             ("runtime-images", ["xcrun", "simctl", "runtime", "list", "--json"]),
         )
         timeout = 15
+    deadline = time.monotonic() + 30 if stage in ("failure", "workflow-failure") else None
     results = []
     for name, command in commands:
-        code = capture(command, f"duo-health-{stage}-{name}.txt", timeout)
+        code = capture(command, f"duo-health-{stage}-{name}.txt", timeout,
+                       deadline=deadline, fail_on_cleanup=deadline is not None)
         results.append({"name": name, "exit_code": code, "timeout_seconds": timeout})
+        if deadline is not None and (code != 0 or time.monotonic() >= deadline):
+            break
     files = sorted(RESULTS.glob(f"duo-health-{stage}-*.txt"))
     (RESULTS / f"duo-health-{stage}-summary.json").write_text(json.dumps({
         "stage": stage, "scope": "raw host observations; not an OOM determination",
+        "collection_status": "captured" if len(results) == len(commands) and all(row["exit_code"] == 0 for row in results) else "incomplete",
+        "shared_budget_seconds": 30 if deadline is not None else None,
         "files": [{"name": file.name, "bytes": file.stat().st_size} for file in files],
         "commands": results,
     }, indent=2), encoding="utf-8")
@@ -801,8 +932,8 @@ def deferred_appium_identity():
     require_duo_ci_scope()
     expected = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
                 "GITHUB_REPOSITORY": "EVNII/AdaptiveShell.maui",
-                "GITHUB_REF_NAME": "codex/duo-deferred-appium-post-suite",
-                "GITHUB_WORKFLOW": "Duo Deferred Appium Post Suite Diagnostic",
+                "GITHUB_REF_NAME": "codex/duo-bounded-capture",
+                "GITHUB_WORKFLOW": "Duo Bounded Capture E2E",
                 "DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED": "true"}
     if any(os.environ.get(key) != value for key, value in expected.items()):
         raise ValueError("Deferred Appium is limited to its explicit isolated hosted source")
@@ -925,7 +1056,7 @@ def start_appium_preboot(deadline=None, marker=None, preinstall_sha=None):
                             "started_utc": datetime.now(timezone.utc).isoformat()}
                 metadata["listener_readback"] = listener
                 try:
-                    observed = subprocess.run(listener["argv"], capture_output=True, text=True,
+                    observed = bounded_client(listener["argv"], text=True,
                                               timeout=min(5, remaining(deadline)))
                     listener.update(exit_code=observed.returncode, stdout=observed.stdout, stderr=observed.stderr)
                     lines = observed.stdout.strip().splitlines()
@@ -1138,8 +1269,8 @@ def require_selection_diagnostic_identity():
             or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
             or os.environ.get("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
             or os.environ.get("GITHUB_JOB") != "uitest-ios-27-1-duo"
-            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-deferred-appium-post-suite"
-            or os.environ.get("GITHUB_WORKFLOW") != "Duo Deferred Appium Post Suite Diagnostic"
+            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-bounded-capture"
+            or os.environ.get("GITHUB_WORKFLOW") != "Duo Bounded Capture E2E"
             or os.environ.get("GITHUB_WORKFLOW_SHA") != os.environ.get("GITHUB_SHA")
             or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))):
         raise ValueError("This helper is restricted to the exact current13 selection diagnostic workflow")
