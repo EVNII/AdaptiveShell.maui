@@ -19,7 +19,7 @@ Navigation buttons are independently scoped by original enableMultiWindows XML
 before/after the PNG: displayed/clickable SystemUI or Launcher back/home/recent_apps
 resource IDs, stable native screen bounds wholly within mobile:getSystemBars.
 No PNG-derived crop, guessed density, or tablet-taskbar foreground substitutes.
-The observed API32/33 wide alternative accepts an explicitly absent zero-frame
+The observed API32/33/34 wide alternative accepts an explicitly absent zero-frame
 navigationBar only when original before/after XML independently supplies one
 Launcher taskbar_container/navbuttons_view full-width bottom frame, one same-window
 end_nav_buttons parent and all three actual clickable children. The pixels remain
@@ -173,7 +173,7 @@ def absent_navigation_bar(system_bars):
 
 
 def native_launcher_taskbar(path, png, app_package):
-    """Observed API32/33 wide contract: actual Launcher3 full-window AX ancestors.
+    """Observed API32/33/34 wide contract: actual Launcher3 full-window AX ancestors.
 
     Read the original multi-window native bounds. Never infer a frame from the
     three button positions, PNG colors, viewport height, density or bar ratios.
@@ -197,7 +197,7 @@ def native_launcher_taskbar(path, png, app_package):
                 or node.get("displayed") != "true" or node.get("enabled") != "true"):
             raise ValueError(f"Native Launcher {name} identity/visibility differs")
         window = node.get("window-id", "")
-        if not re.fullmatch(r"[1-9][0-9]*", window):
+        if not re.fullmatch(r"(0|[1-9][0-9]*)", window):
             raise ValueError(f"Native Launcher {name} has no actual window identity")
         match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds", ""))
         if not match:
@@ -319,9 +319,9 @@ def analyze_navigation_bar(metadata_path, metadata, stage, png):
         after = native_navigation_bar(metadata["systemBarsAfter"])
     else:
         api_level = integer(int(metadata["deviceInfo"]["apiVersion"]), "apiVersion")
-        if (api_level not in (32, 33)
+        if (api_level not in (32, 33, 34)
                 or metadata["png"] != f"shots/android-wide/{SEQUENCES[stage]:02}-theme-{stage}.png"):
-            raise ValueError("An absent navigationBar is only supported by the observed API32/33 wide Launcher taskbar contract")
+            raise ValueError("An absent navigationBar is only supported by the observed API32/33/34 wide Launcher taskbar contract")
         absent_navigation_bar(metadata["systemBarsBefore"])
         absent_navigation_bar(metadata["systemBarsAfter"])
         before, taskbar_provenance = native_launcher_taskbar(before_path, png, app_package)
