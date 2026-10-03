@@ -654,7 +654,6 @@ namespace AdaptiveShell.Platforms.MacIOS
                 {
                     _contentInsets = value;
                     View?.SetNeedsLayout();
-                    View?.LayoutIfNeeded();
                 }
             }
 

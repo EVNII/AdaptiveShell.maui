@@ -1,4 +1,4 @@
-name: Duo Bounded Capture E2E
+name: Duo Deferred Layout E2E
 
 on:
   workflow_dispatch:
@@ -205,7 +205,7 @@ jobs:
               need(sys.platform == 'darwin' and all(os.environ.get(k) == v for k, v in {
                   'GITHUB_ACTIONS': 'true', 'RUNNER_OS': 'macOS', 'RUNNER_ENVIRONMENT': 'github-hosted',
                   'GITHUB_REPOSITORY': 'EVNII/AdaptiveShell.maui', 'GITHUB_JOB': 'uitest-ios-27-1-duo',
-                  'GITHUB_REF_NAME': 'codex/duo-bounded-capture', 'GITHUB_WORKFLOW': 'Duo Bounded Capture E2E'
+                  'GITHUB_REF_NAME': 'codex/duo-deferred-layout', 'GITHUB_WORKFLOW': 'Duo Deferred Layout E2E'
               }.items()), 'Exact hosted Duo CI scope rejected')
               head = os.environ.get('GITHUB_SHA', '')
               need(re.fullmatch('[0-9a-f]{40}', head) and os.environ.get('GITHUB_WORKFLOW_SHA') == head, 'Workflow/source identity differs')
