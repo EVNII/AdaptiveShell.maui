@@ -143,8 +143,8 @@ def ci_identity():
             "This transfer command is restricted to ephemeral GitHub macOS CI")
     require(os.environ.get("GITHUB_REPOSITORY") == "EVNII/AdaptiveShell.maui"
             and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
-            and os.environ.get("GITHUB_REF_NAME") == "codex/duo-post-suite-snapshot-comparison"
-            and os.environ.get("GITHUB_WORKFLOW") == "Duo Post Suite Snapshot Comparison"
+            and os.environ.get("GITHUB_REF_NAME") == "codex/duo-deferred-appium-post-suite"
+            and os.environ.get("GITHUB_WORKFLOW") == "Duo Deferred Appium Post Suite Diagnostic"
             and os.environ.get("GITHUB_JOB") in (PRODUCER_JOB, CONSUMER_JOB),
             "Handoff is restricted to the exact current13 selection diagnostic workflow")
     workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()

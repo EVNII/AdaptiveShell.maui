@@ -64,8 +64,8 @@ public class SessionHost
             || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true"
             || Environment.GetEnvironmentVariable("GITHUB_JOB") != "uitest-ios-27-1-duo"
             || Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
-            || Environment.GetEnvironmentVariable("GITHUB_REF_NAME") != "codex/duo-post-suite-snapshot-comparison"
-            || Environment.GetEnvironmentVariable("GITHUB_WORKFLOW") != "Duo Post Suite Snapshot Comparison")
+            || Environment.GetEnvironmentVariable("GITHUB_REF_NAME") != "codex/duo-deferred-appium-post-suite"
+            || Environment.GetEnvironmentVariable("GITHUB_WORKFLOW") != "Duo Deferred Appium Post Suite Diagnostic")
             throw new InvalidOperationException("The preboot TestHost barrier requires explicit Duo CI opt-in.");
 
         static string Required(string key) => Environment.GetEnvironmentVariable(key)

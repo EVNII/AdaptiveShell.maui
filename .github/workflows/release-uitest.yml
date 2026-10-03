@@ -1,4 +1,4 @@
-name: Duo Post Suite Snapshot Comparison
+name: Duo Deferred Appium Post Suite Diagnostic
 
 on:
   workflow_dispatch:
@@ -100,6 +100,7 @@ jobs:
     env:
       DUO_REMOVE_UNUSED_27_0_RUNTIME: 'true'
       DUO_DIAGNOSTIC_DISABLE_SPOTLIGHT_INDEXING: 'true'
+      DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -204,7 +205,7 @@ jobs:
               need(sys.platform == 'darwin' and all(os.environ.get(k) == v for k, v in {
                   'GITHUB_ACTIONS': 'true', 'RUNNER_OS': 'macOS', 'RUNNER_ENVIRONMENT': 'github-hosted',
                   'GITHUB_REPOSITORY': 'EVNII/AdaptiveShell.maui', 'GITHUB_JOB': 'uitest-ios-27-1-duo',
-                  'GITHUB_REF_NAME': 'codex/duo-post-suite-snapshot-comparison', 'GITHUB_WORKFLOW': 'Duo Post Suite Snapshot Comparison'
+                  'GITHUB_REF_NAME': 'codex/duo-deferred-appium-post-suite', 'GITHUB_WORKFLOW': 'Duo Deferred Appium Post Suite Diagnostic'
               }.items()), 'Exact hosted Duo CI scope rejected')
               head = os.environ.get('GITHUB_SHA', '')
               need(re.fullmatch('[0-9a-f]{40}', head) and os.environ.get('GITHUB_WORKFLOW_SHA') == head, 'Workflow/source identity differs')
@@ -300,9 +301,9 @@ jobs:
       - name: Build installed WDA16.12.11 for exact Shutdown Duo before boot
         timeout-minutes: 15
         run: python3 .github/workflows/scripts/duo-wda-prebuild.py build
-      - name: Start owned global Appium and verify live status before boot
+      - name: Verify owned Appium remains unstarted before native boot and install
         timeout-minutes: 4
-        run: python3 .github/workflows/scripts/duo-split-build-run.py --start-appium-preboot
+        run: python3 .github/workflows/scripts/duo-split-build-run.py --verify-appium-deferred-preboot
       - name: Capture bounded preboot resource observations
         timeout-minutes: 2
         run: python3 .github/workflows/scripts/duo-split-build-run.py --resource-observation before-boot

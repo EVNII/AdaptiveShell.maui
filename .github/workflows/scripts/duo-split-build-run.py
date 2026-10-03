@@ -298,13 +298,13 @@ def parse_owned_appium_identity(metadata, native_line, uid):
     return {"pid": pid, "pgid": pid, "uid": uid, "command": parts[8], "native_start_token": token}
 
 
-def native_appium_identity(metadata):
+def native_appium_identity(metadata, deadline=None):
     pid = metadata.get("pid")
     if type(pid) is not int or pid <= 1:
         raise ValueError("Invalid Appium PID")
     completed = subprocess.run(
         ["ps", "-p", str(pid), "-o", "pid=,pgid=,uid=,lstart=,command="],
-        capture_output=True, text=True, timeout=5,
+        capture_output=True, text=True, timeout=5 if deadline is None else min(5, remaining(deadline)),
         env={**os.environ, "LC_ALL": "C", "TZ": "UTC"})
     if completed.returncode != 0 or len(completed.stdout.strip().splitlines()) != 1:
         raise ValueError("Cannot establish one live native Appium process")
@@ -478,9 +478,11 @@ def boot_after_testhost(marker, deadline):
     atomic_json(RESULTS / "duo-testhost-boot-proof.json", proof)
     event("preboot-testhost-boot-verified", proof=proof,
           total_remaining_seconds=remaining(deadline))
-    # Fresh live postboot status is required; preboot ready JSON is insufficient.
-    if not wait_ready(None, "http://127.0.0.1:4723/status", min(180, remaining(deadline))):
-        raise RuntimeError("Appium is not live after actual Duo boot")
+    # Deferred opt-in starts the same owned server only after verified AUT install.
+    # The original/default path keeps its original postboot readiness check.
+    if os.environ.get("DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED") != "true":
+        if not wait_ready(None, "http://127.0.0.1:4723/status", min(180, remaining(deadline))):
+            raise RuntimeError("Appium is not live after actual Duo boot")
     remaining(deadline)
     resource_observation("after-boot")
     remaining(deadline)
@@ -640,10 +642,19 @@ def main():
     phase = "prebuilt-wda-configuration"
     try:
         verify_prebuilt_wda_configuration()
-        phase = "appium-readiness"
-        # Require the live server before starting the actual TestHost. A second
-        # fresh readiness check after native boot is required before release.
-        if not wait_ready(None, "http://127.0.0.1:4723/status", 180):
+        deferred = os.environ.get("DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED") == "true"
+        phase = "deferred-appium-preboot-proof" if deferred else "appium-readiness"
+        if deferred:
+            deferred_preboot_identity = deferred_appium_identity()
+            proof = json.loads((RESULTS / "duo-appium-deferred-preboot.json").read_text())
+            if (proof.get("status") != "server-not-started" or proof.get("identity") != deferred_preboot_identity
+                    or proof.get("appium_started") is not False or proof.get("appium_ready") is not False
+                    or proof.get("port_observation") != "connection-refused"):
+                raise ValueError("Same-source original preboot server-absence proof is missing")
+            if os.environ.get("DUO_DIAGNOSTIC_PREINSTALL_AUT") != "true":
+                raise ValueError("Deferred Appium requires the unchanged native preinstall proof")
+        # Original/default entry still requires its original preboot ready server.
+        if not deferred and not wait_ready(None, "http://127.0.0.1:4723/status", 180):
             exit_code = 2
         else:
             phase = "complete-suite-testhost-preboot"
@@ -683,6 +694,11 @@ def main():
                 if os.environ.get("DUO_DIAGNOSTIC_PREINSTALL_AUT") == "true":
                     phase = "native-aut-preinstall-before-testhost-release"
                     preinstall_sha = preinstall_verified_aut(marker, deadline)
+                if deferred:
+                    phase = "owned-appium-after-verified-native-install"
+                    if start_appium_preboot(deadline=deadline, marker=marker, preinstall_sha=preinstall_sha) != 0:
+                        raise RuntimeError("Owned Appium failed after verified native AUT install")
+                    remaining(deadline)
                 if test.poll() is not None or os.getpgid(marker["testhost_pid"]) != test.pid:
                     raise RuntimeError("Actual waiting TestHost exited before boot release")
                 release = {key: marker[key] for key in
@@ -690,6 +706,8 @@ def main():
                 release.update(status="boot-verified", boot_proof_sha256=file_sha256(RESULTS / "duo-testhost-boot-proof.json"))
                 if preinstall_sha is not None:
                     release["preinstall_proof_sha256"] = preinstall_sha
+                if deferred:
+                    release["appium_postinstall_process_sha256"] = file_sha256(RESULTS / "duo-appium-process.json")
                 remaining(deadline)
                 atomic_json(RESULTS / "duo-testhost-release.json", release)
                 phase = "complete-suite-after-native-boot-release"
@@ -726,7 +744,9 @@ def main():
                   "phase": phase, "exit_code": exit_code,
                   "appium_ready_budget_seconds": 180, "test_budget_seconds": 1200,
                   "budget_scope": "one complete process: TestHost/barrier/actual boot/Appium session/all tests",
-                  "appium_start_path": "global Appium command; started and checked before simulator boot"}
+                  "appium_start_path": ("same owned global Appium; after verified native AUT install and before TestHost release"
+                                        if os.environ.get("DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED") == "true"
+                                        else "global Appium command; started and checked before simulator boot")}
         (RESULTS / "duo-full-diagnostic.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         event("diagnostic-complete", **result)
     return exit_code
@@ -776,15 +796,109 @@ def shutdown_build_servers():
     return code
 
 
-def start_appium_preboot():
+def deferred_appium_identity():
+    """Read-only exact-source qualification for this isolated startup-order opt-in."""
+    require_duo_ci_scope()
+    expected = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
+                "GITHUB_REPOSITORY": "EVNII/AdaptiveShell.maui",
+                "GITHUB_REF_NAME": "codex/duo-deferred-appium-post-suite",
+                "GITHUB_WORKFLOW": "Duo Deferred Appium Post Suite Diagnostic",
+                "DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED": "true"}
+    if any(os.environ.get(key) != value for key, value in expected.items()):
+        raise ValueError("Deferred Appium is limited to its explicit isolated hosted source")
+    head = os.environ.get("GITHUB_SHA", "")
+    if re.fullmatch(r"[0-9a-f]{40}", head) is None or os.environ.get("GITHUB_WORKFLOW_SHA") != head:
+        raise ValueError("Deferred source/workflow identity is missing")
+    identity = {"run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                "head_sha": head, "device_udid": os.environ["DUO_DEVICE_UDID"],
+                "workflow_sha256": file_sha256(Path(".github/workflows/release-uitest.yml")),
+                "script_sha256": file_sha256(Path(__file__))}
+    handoff = json.loads((RESULTS / "duo-split-consumer.json").read_text())
+    tools = json.loads((RESULTS / "duo-official-toolchain.json").read_text())
+    original = handoff.get("identity", {})
+    if (handoff.get("status") != "verified" or tools.get("status") != "verified"
+            or original.get("run_id") != identity["run_id"] or original.get("run_attempt") != identity["run_attempt"]
+            or original.get("source_sha") != head or original.get("workflow_sha256") != identity["workflow_sha256"]
+            or tools.get("run_id") != identity["run_id"] or tools.get("run_attempt") != identity["run_attempt"]
+            or tools.get("head_sha") != head or tools.get("workflow_sha256") != identity["workflow_sha256"]):
+        raise ValueError("Deferred entry lacks the exact original verified build/tool source")
+    return identity
+
+
+def verify_appium_deferred_preboot():
+    """No owned server starts here; preserve actual closed-port/static-WDA proof."""
+    import socket
+    deadline = time.monotonic() + 10
+    proof = {"scope": "This source has not started its owned Appium; not a ready/session/UI proof",
+             "status": "failed", "appium_started": False, "appium_ready": False,
+             "started_utc": datetime.now(timezone.utc).isoformat(), "budget_seconds": 10}
+    output = RESULTS / "duo-appium-deferred-preboot.json"
+    if output.exists() or output.is_symlink():
+        raise ValueError("Preboot absence proof already exists; refusing reuse")
+    try:
+        proof["identity"] = deferred_appium_identity()
+        verify_prebuilt_wda_configuration()
+        forbidden = (Path("appium.log"), RESULTS / "duo-appium-process.json",
+                     RESULTS / "duo-appium-preboot-status.json", RESULTS / "duo-appium-postinstall-status.json")
+        if any(path.exists() or path.is_symlink() for path in forbidden):
+            raise ValueError("Owned server metadata/log/status already exists before native install")
+        try:
+            connection = socket.create_connection(("127.0.0.1", 4723), timeout=min(2, remaining(deadline)))
+        except ConnectionRefusedError:
+            proof["port_observation"] = "connection-refused"
+        else:
+            connection.close()
+            raise ValueError("Appium port is already open; refusing another server or inherited readiness")
+        remaining(deadline)
+        proof["status"] = "server-not-started"
+    except Exception as error:
+        proof["error"] = repr(error)
+    finally:
+        proof["finished_utc"] = datetime.now(timezone.utc).isoformat()
+        atomic_json(output, proof)
+        event("appium-deferred-preboot-proof", **proof)
+    return 0 if proof["status"] == "server-not-started" else 1
+
+
+def start_appium_preboot(deadline=None, marker=None, preinstall_sha=None):
     require_duo_ci_scope()
     RESULTS.mkdir(parents=True, exist_ok=True)
     process = None
     exit_code = 2
     command_path = shutil.which("appium")
-    metadata = {"scope": "preboot startup evidence; not a UI test result",
+    deferred = os.environ.get("DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED") == "true"
+    stage = "postinstall" if deferred else "preboot"
+    receipt = RESULTS / "duo-appium-process.json"
+    receipt_owned_sha = None
+    metadata = {"scope": stage + " startup evidence; not a UI test result",
                 "command": command_path, "arguments": ["--keep-alive-timeout", "900"], "ready_budget_seconds": 180}
     try:
+        if deferred:
+            if deadline is None or marker is None or not isinstance(preinstall_sha, str):
+                raise ValueError("Deferred owned Appium requires the original clock and successful installed-AUT proof")
+            remaining(deadline)
+            identity = deferred_appium_identity()
+            proof_path = RESULTS / "duo-aut-preinstall-proof.json"
+            proof = json.loads(proof_path.read_text())
+            keys = ("run_id", "run_attempt", "head_sha", "device_udid", "nonce", "testhost_pid", "assembly_sha256")
+            if (proof.get("status") != "verified" or file_sha256(proof_path) != preinstall_sha
+                    or proof.get("identity") != {key: marker[key] for key in keys}
+                    or any(marker[key] != identity[key] for key in ("run_id", "run_attempt", "head_sha", "device_udid"))):
+                raise ValueError("Installed proof is not the same actual source/run/UDID/waiting TestHost")
+            if any(path.exists() or path.is_symlink() for path in (receipt, Path("appium.log"))):
+                raise ValueError("Refusing another server or original Appium log reuse")
+            metadata.update(identity=proof["identity"], preinstall_proof_sha256=preinstall_sha,
+                            whole_clock_remaining_seconds=remaining(deadline))
+            # Boot/install can take minutes; the earlier absence proof is not fresh.
+            import socket
+            try:
+                connection = socket.create_connection(("127.0.0.1", 4723), timeout=min(2, remaining(deadline)))
+            except ConnectionRefusedError:
+                metadata["fresh_pre_spawn_port_observation"] = "connection-refused"
+            else:
+                connection.close()
+                raise ValueError("Postinstall Appium port is already open; refusing inherited readiness")
+            remaining(deadline)
         if not command_path:
             raise ValueError("The installed global Appium command was not found")
         with Path("appium.log").open("wb") as appium_log:
@@ -792,19 +906,48 @@ def start_appium_preboot():
         metadata.update({"pid": process.pid, "owned_process_group": process.pid,
                          "started_utc": datetime.now(timezone.utc).isoformat(),
                          "start_new_session": True})
-        metadata["native_start_token"] = native_appium_identity(metadata)["native_start_token"]
-        (RESULTS / "duo-appium-process.json").write_text(
-            json.dumps(metadata, indent=2), encoding="utf-8")
-        event("appium-preboot-started", **metadata)
-        if wait_ready(process, "http://127.0.0.1:4723/status", 180,
-                      output="duo-appium-preboot-status.json") and process.poll() is None:
+        metadata["native_start_token"] = native_appium_identity(metadata, deadline)["native_start_token"]
+        if deferred:
+            atomic_json(receipt, metadata)
+            receipt_owned_sha = file_sha256(receipt)
+        else:
+            receipt.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        event("appium-" + stage + "-started", **metadata)
+        seconds = 180 if deadline is None else min(180, remaining(deadline))
+        metadata["actual_ready_budget_seconds"] = seconds
+        if wait_ready(process, "http://127.0.0.1:4723/status", seconds,
+                      output="duo-appium-" + stage + "-status.json") and process.poll() is None:
+            if deadline is not None:
+                remaining(deadline)
+            if deferred:
+                # /status alone does not identify its responding server.
+                listener = {"argv": ["lsof", "-nP", "-t", "-iTCP:4723", "-sTCP:LISTEN"],
+                            "started_utc": datetime.now(timezone.utc).isoformat()}
+                metadata["listener_readback"] = listener
+                try:
+                    observed = subprocess.run(listener["argv"], capture_output=True, text=True,
+                                              timeout=min(5, remaining(deadline)))
+                    listener.update(exit_code=observed.returncode, stdout=observed.stdout, stderr=observed.stderr)
+                    lines = observed.stdout.strip().splitlines()
+                    if (observed.returncode != 0 or len(lines) != 1
+                            or re.fullmatch(r"[1-9][0-9]*", lines[0]) is None
+                            or int(lines[0]) != process.pid):
+                        raise ValueError("Ready Appium listener is not the exact owned server PID")
+                    listener["native_identity"] = native_appium_identity(metadata, deadline)
+                    remaining(deadline)
+                    listener["status"] = "verified"
+                except Exception as error:
+                    listener.update(status="failed", error=repr(error))
+                    raise
+                finally:
+                    listener["finished_utc"] = datetime.now(timezone.utc).isoformat()
             exit_code = 0
         metadata.update({"ready": exit_code == 0, "exit_code": exit_code,
                          "process_exit_code": process.poll()})
     except Exception as error:
         metadata.update({"ready": False, "exit_code": exit_code,
                          "error_type": type(error).__name__, "error": str(error)})
-        event("appium-preboot-error", type=type(error).__name__, error=str(error))
+        event("appium-" + stage + "-error", type=type(error).__name__, error=str(error))
     finally:
         if exit_code != 0:
             try:
@@ -817,11 +960,19 @@ def start_appium_preboot():
             flush_logs()
         except Exception as error:
             event("live-log-flush-error", error=str(error))
-        (RESULTS / "duo-appium-process.json").write_text(
-            json.dumps(metadata, indent=2), encoding="utf-8")
-        event("appium-preboot-complete", **metadata)
-    # On success the explicitly owned server remains alive for the later real
-    # postboot readiness probe and complete suite; GitHub cleans job orphans.
+        if deferred and (receipt_owned_sha is None or not receipt.is_file()
+                         or receipt.is_symlink() or file_sha256(receipt) != receipt_owned_sha):
+            # Never replace an earlier/foreign ownership receipt, even on refusal.
+            exit_code = 2
+            metadata.update(ready=False, exit_code=exit_code, ownership_receipt_preserved=True)
+            if process is not None:
+                stop_group(process, "appium-preboot", grace=1)
+            atomic_json(RESULTS / "duo-appium-postinstall-start-failure.json", metadata)
+        else:
+            receipt.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        event("appium-" + stage + "-complete", **metadata)
+    # On success this same explicitly owned server remains alive for the complete
+    # suite. Deferred readiness is before release, inside its original1200s clock.
     return exit_code
 
 
@@ -987,8 +1138,8 @@ def require_selection_diagnostic_identity():
             or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
             or os.environ.get("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
             or os.environ.get("GITHUB_JOB") != "uitest-ios-27-1-duo"
-            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-post-suite-snapshot-comparison"
-            or os.environ.get("GITHUB_WORKFLOW") != "Duo Post Suite Snapshot Comparison"
+            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-deferred-appium-post-suite"
+            or os.environ.get("GITHUB_WORKFLOW") != "Duo Deferred Appium Post Suite Diagnostic"
             or os.environ.get("GITHUB_WORKFLOW_SHA") != os.environ.get("GITHUB_SHA")
             or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))):
         raise ValueError("This helper is restricted to the exact current13 selection diagnostic workflow")
@@ -1004,6 +1155,8 @@ if __name__ == "__main__":
         sys.exit(health(sys.argv[2]))
     if sys.argv[1:] == ["--shutdown-build-servers"]:
         sys.exit(shutdown_build_servers())
+    if sys.argv[1:] == ["--verify-appium-deferred-preboot"]:
+        sys.exit(verify_appium_deferred_preboot())
     if sys.argv[1:] == ["--start-appium-preboot"]:
         sys.exit(start_appium_preboot())
     if sys.argv[1:]:

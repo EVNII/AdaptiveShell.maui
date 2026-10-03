@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timezone
 
 BUNDLE = "com.companyname.exampleashellapp"
-BRANCH = "codex/duo-post-suite-snapshot-comparison"
+BRANCH = "codex/duo-deferred-appium-post-suite"
 MODEL = "iPhone19,4"
 LOG = "ashell-duo-visibility.jsonl"
 
@@ -219,7 +219,7 @@ def collect(workspace):
                 and sys.platform == "darwin" and os.environ.get("GITHUB_JOB") == "uitest-ios-27-1-duo"
                 and os.environ.get("GITHUB_REPOSITORY") == "EVNII/AdaptiveShell.maui"
                 and os.environ.get("GITHUB_REF_NAME") == BRANCH
-                and os.environ.get("GITHUB_WORKFLOW") == "Duo Post Suite Snapshot Comparison"
+                and os.environ.get("GITHUB_WORKFLOW") == "Duo Deferred Appium Post Suite Diagnostic"
                 and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
                 and os.environ.get("UITEST_DUO_VISIBILITY_DIAGNOSTIC") == "true"
                 and os.environ.get("UITEST_PLATFORM") == "ios" and os.environ.get("UITEST_FORM") == "duo",
