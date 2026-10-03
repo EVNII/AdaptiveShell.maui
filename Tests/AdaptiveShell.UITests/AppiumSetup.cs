@@ -274,8 +274,8 @@ public static class AppiumSetup
             || Env("RUNNER_ENVIRONMENT") != "github-hosted"
             || Env("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
             || Env("GITHUB_JOB") != "uitest-ios-27-1-duo"
-            || Env("GITHUB_REF_NAME") != "codex/duo-deferred-layout"
-            || Env("GITHUB_WORKFLOW") != "Duo Deferred Layout E2E"
+            || Env("GITHUB_REF_NAME") != "codex/duo-native-first-boot"
+            || Env("GITHUB_WORKFLOW") != "Duo Native First Boot E2E"
             || head is not { Length: 40 } || head.Any(c => !"0123456789abcdef".Contains(c))
             || Env("GITHUB_WORKFLOW_SHA") != head
             || !ulong.TryParse(Env("GITHUB_RUN_ID"), out var run) || run == 0

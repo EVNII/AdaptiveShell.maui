@@ -510,12 +510,28 @@ def wait_for_testhost(test, identity, deadline):
         raise ValueError("Actual TestHost assembly path mismatch")
     if test.poll() is not None:
         raise RuntimeError("Complete test process exited while verifying TestHost arrival")
-    event("preboot-testhost-arrival-verified", marker=marker, owned_test_pgid=test.pid,
+    event("native-first-testhost-arrival-observed" if native_first_boot_enabled() else "preboot-testhost-arrival-verified", marker=marker, owned_test_pgid=test.pid,
           total_remaining_seconds=remaining(deadline))
     return marker
 
 
+def native_first_boot_enabled():
+    option = os.environ.get("DUO_DIAGNOSTIC_NATIVE_FIRST_BOOT")
+    if option is None:
+        return False
+    require_selection_diagnostic_identity()
+    if (option != "true" or os.environ.get("DUO_DIAGNOSTIC_PREBOOT_HOST") != "true"
+            or os.environ.get("DUO_DIAGNOSTIC_PREINSTALL_AUT") != "true"
+            or os.environ.get("DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED") != "true"):
+        raise ValueError("Native-first boot requires its explicit isolated Duo setup opt-ins")
+    return True
+
+
 def boot_after_testhost(marker, deadline):
+    native_first = native_first_boot_enabled()
+    if native_first and "testhost_pid" in marker:
+        raise ValueError("Native-first boot must precede the actual TestHost arrival")
+    boot_started_utc = datetime.now(timezone.utc).isoformat()
     udid = marker["device_udid"]
     if udid != os.environ.get("DUO_DEVICE_UDID"):
         raise ValueError("Barrier and prepared actual Duo UDIDs differ")
@@ -528,7 +544,7 @@ def boot_after_testhost(marker, deadline):
         if code != 0:
             raise RuntimeError(f"Native boot proof failed: {filename}, exit {code}")
         return (RESULTS / filename).read_text(encoding="utf-8").strip()
-    event("preboot-testhost-boot-begin", device_udid=udid,
+    event("native-first-boot-begin" if native_first else "preboot-testhost-boot-begin", device_udid=udid,
           total_remaining_seconds=remaining(deadline))
     native(["xcrun", "simctl", "boot", udid], "duo-testhost-boot.txt", 60)
     native(["xcrun", "simctl", "bootstatus", udid, "-b"], "duo-testhost-bootstatus.txt", 600)
@@ -582,8 +598,13 @@ def boot_after_testhost(marker, deadline):
              "sdk_version": sdk, "xcode_version_output": xcode,
              "native_environment_sha256": file_sha256(RESULTS / "duo-testhost-native-after-boot.json"),
              "display_evidence_sha256": file_sha256(RESULTS / "duo-displays.txt")}
+    if native_first:
+        proof.update(startup_order="native-boot-before-testhost", testhost_spawned=False,
+                     identity={key: marker[key] for key in
+                               ("run_id", "run_attempt", "head_sha", "device_udid", "nonce", "assembly_path", "assembly_sha256")},
+                     boot_started_utc=boot_started_utc, boot_finished_utc=datetime.now(timezone.utc).isoformat())
     atomic_json(RESULTS / "duo-testhost-boot-proof.json", proof)
-    event("preboot-testhost-boot-verified", proof=proof,
+    event("native-first-boot-verified" if native_first else "preboot-testhost-boot-verified", proof=proof,
           total_remaining_seconds=remaining(deadline))
     # Deferred opt-in starts the same owned server only after verified AUT install.
     # The original/default path keeps its original postboot readiness check.
@@ -781,22 +802,43 @@ def main():
             environment = os.environ.copy()
             environment.update(DUO_DIAGNOSTIC_BARRIER_NONCE=identity["nonce"],
                                DUO_DIAGNOSTIC_ASSEMBLY_SHA256=identity["assembly_sha256"])
+            native_first = native_first_boot_enabled()
             command = [
                 "dotnet", "test", "Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj",
                 "--no-build", "--no-restore",
                 "--logger", "trx;LogFileName=e2e.trx", "--logger", "console;verbosity=detailed",
                 "--results-directory", "TestResults", "--diag", "TestResults/duo-vstest.log",
             ]
-            # One clock begins BEFORE spawn and includes TestHost, barrier,
-            # boot, postboot readiness, original Appium session and all tests.
+            # One clock begins BEFORE either native boot or the unique spawn.
+            # Both orders include boot, TestHost, original session and all tests.
             deadline = time.monotonic() + 1200
-            event("preboot-testhost-single-process-begin", budget_seconds=1200,
+            event("native-first-shared-clock-begin" if native_first else "preboot-testhost-single-process-begin", budget_seconds=1200,
                   scope="one unfiltered full suite; shared budget includes actual Duo boot")
+            native_boot_sha = None
+            if native_first:
+                phase = "exact-duo-native-boot-before-testhost"
+                boot_after_testhost(identity, deadline)
+                native_boot_sha = file_sha256(RESULTS / "duo-testhost-boot-proof.json")
+                environment["DUO_DIAGNOSTIC_NATIVE_BOOT_PROOF_SHA256"] = native_boot_sha
+                remaining(deadline)
             with (RESULTS / "duo-test-console.log").open("wb") as test_log:
+                if native_first:
+                    phase = "unique-testhost-after-native-boot"
+                    event("native-first-testhost-spawn-begin", boot_proof_sha256=native_boot_sha,
+                          total_remaining_seconds=remaining(deadline))
                 test = start_owned(command, stdout=test_log, stderr=subprocess.STDOUT, env=environment)
                 marker = wait_for_testhost(test, identity, deadline)
-                phase = "exact-duo-boot-after-testhost"
-                boot_after_testhost(marker, deadline)
+                if native_first:
+                    if (marker.get("startup_order") != "native-boot-before-testhost"
+                            or marker.get("preexisting_boot_proof_sha256") != native_boot_sha
+                            or file_sha256(RESULTS / "duo-testhost-boot-proof.json") != native_boot_sha):
+                        raise ValueError("Actual TestHost did not acknowledge the same native-first boot proof")
+                    event("native-first-testhost-arrival-verified", testhost_pid=marker["testhost_pid"],
+                          owned_test_pgid=test.pid, boot_proof_sha256=native_boot_sha,
+                          total_remaining_seconds=remaining(deadline))
+                else:
+                    phase = "exact-duo-boot-after-testhost"
+                    boot_after_testhost(marker, deadline)
                 preinstall_sha = None
                 if os.environ.get("DUO_DIAGNOSTIC_PREINSTALL_AUT") == "true":
                     phase = "native-aut-preinstall-before-testhost-release"
@@ -811,6 +853,8 @@ def main():
                 release = {key: marker[key] for key in
                            ("run_id", "run_attempt", "head_sha", "device_udid", "nonce", "testhost_pid", "assembly_sha256")}
                 release.update(status="boot-verified", boot_proof_sha256=file_sha256(RESULTS / "duo-testhost-boot-proof.json"))
+                if native_first:
+                    release["startup_order"] = "native-boot-before-testhost"
                 if preinstall_sha is not None:
                     release["preinstall_proof_sha256"] = preinstall_sha
                 if deferred:
@@ -818,7 +862,7 @@ def main():
                 remaining(deadline)
                 atomic_json(RESULTS / "duo-testhost-release.json", release)
                 phase = "complete-suite-after-native-boot-release"
-                event("preboot-testhost-atomic-release", testhost_pid=marker["testhost_pid"],
+                event("native-first-testhost-atomic-release" if native_first else "preboot-testhost-atomic-release", testhost_pid=marker["testhost_pid"],
                       total_remaining_seconds=remaining(deadline))
                 exit_code = wait_test(test, remaining(deadline))
                 if exit_code == 0:
@@ -872,6 +916,8 @@ def main():
                   "appium_start_path": ("same owned global Appium; after verified native AUT install and before TestHost release"
                                         if os.environ.get("DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED") == "true"
                                         else "global Appium command; started and checked before simulator boot")}
+        if os.environ.get("DUO_DIAGNOSTIC_NATIVE_FIRST_BOOT") == "true":
+            result["startup_order"] = "native-boot-before-testhost"
         (RESULTS / "duo-full-diagnostic.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         event("diagnostic-complete", **result)
     return exit_code
@@ -932,8 +978,8 @@ def deferred_appium_identity():
     require_duo_ci_scope()
     expected = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
                 "GITHUB_REPOSITORY": "EVNII/AdaptiveShell.maui",
-                "GITHUB_REF_NAME": "codex/duo-deferred-layout",
-                "GITHUB_WORKFLOW": "Duo Deferred Layout E2E",
+                "GITHUB_REF_NAME": "codex/duo-native-first-boot",
+                "GITHUB_WORKFLOW": "Duo Native First Boot E2E",
                 "DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED": "true"}
     if any(os.environ.get(key) != value for key, value in expected.items()):
         raise ValueError("Deferred Appium is limited to its explicit isolated hosted source")
@@ -1269,8 +1315,8 @@ def require_selection_diagnostic_identity():
             or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
             or os.environ.get("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
             or os.environ.get("GITHUB_JOB") != "uitest-ios-27-1-duo"
-            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-deferred-layout"
-            or os.environ.get("GITHUB_WORKFLOW") != "Duo Deferred Layout E2E"
+            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-native-first-boot"
+            or os.environ.get("GITHUB_WORKFLOW") != "Duo Native First Boot E2E"
             or os.environ.get("GITHUB_WORKFLOW_SHA") != os.environ.get("GITHUB_SHA")
             or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))):
         raise ValueError("This helper is restricted to the exact current13 selection diagnostic workflow")

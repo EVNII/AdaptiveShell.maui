@@ -55,19 +55,23 @@ public class SessionHost
         Shots.Save(Driver, "launch", 1);
     }
 
-    // Diagnostic opt-in only: establish the actual NUnit/TestHost before the
-    // watchdog boots Duo. The ordinary CreateDriver path remains unchanged.
+    // Diagnostic opt-in only: wait for exact native setup before CreateDriver.
+    // Native-first is a separate explicit order; the default host-first remains.
     static void WaitForDiagnosticDuoBoot()
     {
         var enabled = Environment.GetEnvironmentVariable("DUO_DIAGNOSTIC_PREBOOT_HOST");
         if (enabled is null)
+        {
+            if (Environment.GetEnvironmentVariable("DUO_DIAGNOSTIC_NATIVE_FIRST_BOOT") is not null)
+                throw new InvalidOperationException("Native-first boot requires the original TestHost barrier opt-in.");
             return;
+        }
         if (enabled != "true" || AppiumSetup.Platform != "ios" || AppiumSetup.Form != "duo"
             || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true"
             || Environment.GetEnvironmentVariable("GITHUB_JOB") != "uitest-ios-27-1-duo"
             || Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
-            || Environment.GetEnvironmentVariable("GITHUB_REF_NAME") != "codex/duo-deferred-layout"
-            || Environment.GetEnvironmentVariable("GITHUB_WORKFLOW") != "Duo Deferred Layout E2E")
+            || Environment.GetEnvironmentVariable("GITHUB_REF_NAME") != "codex/duo-native-first-boot"
+            || Environment.GetEnvironmentVariable("GITHUB_WORKFLOW") != "Duo Native First Boot E2E")
             throw new InvalidOperationException("The preboot TestHost barrier requires explicit Duo CI opt-in.");
 
         static string Required(string key) => Environment.GetEnvironmentVariable(key)
@@ -104,7 +108,13 @@ public class SessionHost
         var arrived = Path.Combine(results, "duo-testhost-arrived.json");
         var release = Path.Combine(results, "duo-testhost-release.json");
         var proof = Path.Combine(results, "duo-testhost-boot-proof.json");
-        if (File.Exists(arrived) || File.Exists(release) || File.Exists(proof))
+        var nativeFirstOption = Environment.GetEnvironmentVariable("DUO_DIAGNOSTIC_NATIVE_FIRST_BOOT");
+        var nativeFirst = nativeFirstOption is not null;
+        if (nativeFirst && (nativeFirstOption != "true"
+            || Environment.GetEnvironmentVariable("DUO_DIAGNOSTIC_PREINSTALL_AUT") != "true"
+            || Environment.GetEnvironmentVariable("DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED") != "true"))
+            throw new InvalidOperationException("Native-first boot requires explicit isolated setup opt-ins.");
+        if (File.Exists(arrived) || File.Exists(release) || (!nativeFirst && File.Exists(proof)))
             throw new InvalidOperationException("Preboot TestHost barrier files already exist.");
         var identity = new Dictionary<string, object>
         {
@@ -114,6 +124,43 @@ public class SessionHost
             ["assembly_path"] = assembly, ["assembly_sha256"] = assemblySha,
             ["process_args"] = Environment.GetCommandLineArgs(),
         };
+        void ValidateNativeFirstBoot(JsonElement boot)
+        {
+            Match(boot, "startup_order", "native-boot-before-testhost");
+            if (!boot.TryGetProperty("testhost_spawned", out var spawned) || spawned.ValueKind != JsonValueKind.False
+                || boot.TryGetProperty("testhost_pid", out _)
+                || !boot.TryGetProperty("identity", out var nativeIdentity) || nativeIdentity.ValueKind != JsonValueKind.Object
+                || nativeIdentity.EnumerateObject().Count() != 7 || nativeIdentity.TryGetProperty("testhost_pid", out _))
+                throw new InvalidOperationException("Native-first proof must not claim a preexisting TestHost PID.");
+            foreach (var key in new[] { "run_id", "run_attempt", "head_sha", "device_udid", "nonce", "assembly_path", "assembly_sha256" })
+                Match(nativeIdentity, key, (string)identity[key]);
+            Match(boot, "status", "verified");
+            Match(boot, "device_udid", udid);
+            Match(boot, "model", "iPhone19,4");
+            Match(boot, "runtime_identifier", "com.apple.CoreSimulator.SimRuntime.iOS-27-1");
+            Match(boot, "runtime_version", "27.1");
+            Match(boot, "runtime_build", "24A94401");
+            Match(boot, "device_type_identifier", "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo");
+            Match(boot, "sdk_version", "27.1");
+            if (!boot.TryGetProperty("bootstatus_exit_code", out var exit) || !exit.TryGetInt32(out var code) || code != 0
+                || !boot.TryGetProperty("dual_displays_verified", out var dual) || dual.ValueKind != JsonValueKind.True
+                || !boot.TryGetProperty("boot_started_utc", out var start) || !start.TryGetDateTimeOffset(out var started)
+                || !boot.TryGetProperty("boot_finished_utc", out var finish) || !finish.TryGetDateTimeOffset(out var finished)
+                || started > finished || finished > DateTimeOffset.UtcNow)
+                throw new InvalidOperationException("Native-first boot proof is incomplete or has invalid stage times.");
+        }
+        string? nativeBootSha = null;
+        if (nativeFirst)
+        {
+            nativeBootSha = Required("DUO_DIAGNOSTIC_NATIVE_BOOT_PROOF_SHA256");
+            if (nativeBootSha.Length != 64 || nativeBootSha.Any(c => !"0123456789abcdef".Contains(c))
+                || !File.Exists(proof) || HashFile(proof) != nativeBootSha)
+                throw new InvalidOperationException("Actual TestHost lacks its immutable native-first boot proof.");
+            using var nativeDocument = JsonDocument.Parse(File.ReadAllBytes(proof));
+            ValidateNativeFirstBoot(nativeDocument.RootElement);
+            identity["startup_order"] = "native-boot-before-testhost";
+            identity["preexisting_boot_proof_sha256"] = nativeBootSha;
+        }
         var pending = arrived + ".tmp-" + pid;
         File.WriteAllText(pending, JsonSerializer.Serialize(identity));
         File.Move(pending, arrived, false);
@@ -137,6 +184,13 @@ public class SessionHost
         Match(released, "boot_proof_sha256", HashFile(proof));
         using var proofDocument = JsonDocument.Parse(File.ReadAllText(proof));
         var boot = proofDocument.RootElement;
+        if (nativeFirst)
+        {
+            Match(released, "startup_order", "native-boot-before-testhost");
+            if (HashFile(proof) != nativeBootSha)
+                throw new InvalidOperationException("Native-first boot proof changed after actual TestHost arrival.");
+            ValidateNativeFirstBoot(boot);
+        }
         Match(boot, "status", "verified");
         Match(boot, "device_udid", udid);
         Match(boot, "model", "iPhone19,4");

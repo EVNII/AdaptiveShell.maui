@@ -1,4 +1,4 @@
-name: Duo Deferred Layout E2E
+name: Duo Native First Boot E2E
 
 on:
   workflow_dispatch:
@@ -205,7 +205,7 @@ jobs:
               need(sys.platform == 'darwin' and all(os.environ.get(k) == v for k, v in {
                   'GITHUB_ACTIONS': 'true', 'RUNNER_OS': 'macOS', 'RUNNER_ENVIRONMENT': 'github-hosted',
                   'GITHUB_REPOSITORY': 'EVNII/AdaptiveShell.maui', 'GITHUB_JOB': 'uitest-ios-27-1-duo',
-                  'GITHUB_REF_NAME': 'codex/duo-deferred-layout', 'GITHUB_WORKFLOW': 'Duo Deferred Layout E2E'
+                  'GITHUB_REF_NAME': 'codex/duo-native-first-boot', 'GITHUB_WORKFLOW': 'Duo Native First Boot E2E'
               }.items()), 'Exact hosted Duo CI scope rejected')
               head = os.environ.get('GITHUB_SHA', '')
               need(re.fullmatch('[0-9a-f]{40}', head) and os.environ.get('GITHUB_WORKFLOW_SHA') == head, 'Workflow/source identity differs')
@@ -327,6 +327,7 @@ jobs:
           UITEST_DEVICE_UDID: ${{ env.DUO_DEVICE_UDID }}
           UITEST_APP_PATH: ${{ github.workspace }}/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app
           DUO_DIAGNOSTIC_PREBOOT_HOST: 'true'
+          DUO_DIAGNOSTIC_NATIVE_FIRST_BOOT: 'true'
           DUO_DIAGNOSTIC_PREINSTALL_AUT: 'true'
           UITEST_DUO_COMPATIBILITY_OPTIONS: 'true'
           UITEST_DUO_VISIBILITY_DIAGNOSTIC: 'true'
