@@ -19,6 +19,12 @@ Navigation buttons are independently scoped by original enableMultiWindows XML
 before/after the PNG: displayed/clickable SystemUI or Launcher back/home/recent_apps
 resource IDs, stable native screen bounds wholly within mobile:getSystemBars.
 No PNG-derived crop, guessed density, or tablet-taskbar foreground substitutes.
+The observed API32/33 wide alternative accepts an explicitly absent zero-frame
+navigationBar only when original before/after XML independently supplies one
+Launcher taskbar_container/navbuttons_view full-width bottom frame, one same-window
+end_nav_buttons parent and all three actual clickable children. The pixels remain
+scoped to each original button's own AX bounds; other taskbar icons cannot pass.
+This does not change or repair the original run's TRX/CI failure.
 https://github.com/appium/appium-uiautomator2-driver/blob/v8.7.0/README.md#settings-api
 https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-15.0.0_r1/packages/SystemUI/res/layout/back.xml
 https://android.googlesource.com/platform/packages/apps/Launcher3/+/refs/tags/android-15.0.0_r1/quickstep/src/com/android/launcher3/taskbar/NavbarButtonsViewController.java
@@ -156,6 +162,78 @@ def native_navigation_bar(system_bars):
     return bounds
 
 
+def absent_navigation_bar(system_bars):
+    """The alternative contract requires the original, explicitly absent native bar."""
+    if not isinstance(system_bars, dict) or not isinstance(system_bars.get("navigationBar"), dict):
+        raise ValueError("Original navigationBar response is missing")
+    bar = system_bars["navigationBar"]
+    if bar.get("visible") is not False or any(
+            integer(bar.get(key), f"navigationBar.{key}") != 0 for key in ("x", "y", "width", "height")):
+        raise ValueError("Launcher taskbar requires an explicitly absent zero-frame navigationBar")
+
+
+def native_launcher_taskbar(path, png, app_package):
+    """Observed API32/33 wide contract: actual Launcher3 full-window AX ancestors.
+
+    Read the original multi-window native bounds. Never infer a frame from the
+    three button positions, PNG colors, viewport height, density or bar ratios.
+    """
+    data = path.read_bytes()
+    if len(data) > 10 * 1024 * 1024 or b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+        raise ValueError("Native multi-window XML is too large or contains a DTD/entity")
+    root = ET.fromstring(data)
+    if root.tag != "hierarchy" or not any(node.get("package") == app_package for node in root.iter()):
+        raise ValueError("Actual app/hierarchy is missing from native taskbar capture")
+    parents = {child: parent for parent in root.iter() for child in parent}
+    package = "com.android.launcher3"
+
+    def unique(name, native_class):
+        identifier = f"{package}:id/{name}"
+        matches = [node for node in root.iter() if node.get("resource-id") == identifier]
+        if len(matches) != 1:
+            raise ValueError(f"Expected one native Launcher {name}; found {len(matches)}")
+        node = matches[0]
+        if (node.get("package") != package or node.get("class") != native_class or node.tag != native_class
+                or node.get("displayed") != "true" or node.get("enabled") != "true"):
+            raise ValueError(f"Native Launcher {name} identity/visibility differs")
+        window = node.get("window-id", "")
+        if not re.fullmatch(r"[1-9][0-9]*", window):
+            raise ValueError(f"Native Launcher {name} has no actual window identity")
+        match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds", ""))
+        if not match:
+            raise ValueError(f"Native Launcher {name} bounds are missing/invalid")
+        rectangle = tuple(map(int, match.groups()))
+        if not (0 <= rectangle[0] < rectangle[2] <= png.width
+                and 0 <= rectangle[1] < rectangle[3] <= png.height):
+            raise ValueError(f"Native Launcher {name} frame is outside the original PNG")
+        return node, window, rectangle
+
+    taskbar, window, rectangle = unique("taskbar_container", "android.widget.FrameLayout")
+    nav, nav_window, nav_rectangle = unique("navbuttons_view", "android.widget.FrameLayout")
+    end, end_window, end_rectangle = unique("end_nav_buttons", "android.widget.LinearLayout")
+    if (parents.get(taskbar) is not root or parents.get(nav) is not taskbar or parents.get(end) is not nav
+            or window != nav_window or window != end_window or rectangle != nav_rectangle
+            or rectangle[0] != 0 or rectangle[2] != png.width or rectangle[3] != png.height
+            or not (rectangle[0] <= end_rectangle[0] < end_rectangle[2] <= rectangle[2]
+                    and rectangle[1] <= end_rectangle[1] < end_rectangle[3] <= rectangle[3])):
+        raise ValueError("Native Launcher taskbar/nav/end ancestors or full-width bottom frame disagree")
+    for name in NAVIGATION_BUTTONS:
+        node, key_window, key_rectangle = unique(name, "android.widget.ImageView")
+        if (parents.get(node) is not end or key_window != window or node.get("clickable") != "true"
+                or not (end_rectangle[0] <= key_rectangle[0] < key_rectangle[2] <= end_rectangle[2]
+                        and end_rectangle[1] <= key_rectangle[1] < key_rectangle[3] <= end_rectangle[3])):
+            raise ValueError(f"Native Launcher {name} is not a clickable child of this same taskbar window")
+    bar = {"x": rectangle[0], "y": rectangle[1], "width": rectangle[2] - rectangle[0],
+           "height": rectangle[3] - rectangle[1]}
+    provenance = {"frame_source": "native_launcher_taskbar_hierarchy",
+                  "coordinate_source": "enableMultiWindows native Launcher3 taskbar AX frame, unchanged physical pixels",
+                  "package": package, "window_id": window,
+                  "taskbar_resource_id": taskbar.get("resource-id"), "taskbar_rectangle_pixels": list(rectangle),
+                  "navbuttons_resource_id": nav.get("resource-id"), "navbuttons_rectangle_pixels": list(nav_rectangle),
+                  "end_buttons_resource_id": end.get("resource-id"), "end_buttons_rectangle_pixels": list(end_rectangle)}
+    return bar, provenance
+
+
 def native_xml_buttons(path, bar, png, app_package):
     data = path.read_bytes()
     if len(data) > 10 * 1024 * 1024 or b"<!DOCTYPE" in data or b"<!ENTITY" in data:
@@ -228,10 +306,6 @@ def analyze_navigation_bar(metadata_path, metadata, stage, png):
         raise ValueError("The actual tested app package is missing")
     if app_package in NAVIGATION_PACKAGES:
         raise ValueError("The tested app cannot pose as SystemUI or Launcher")
-    before = native_navigation_bar(metadata["systemBarsBefore"])
-    after = native_navigation_bar(metadata["systemBarsAfter"])
-    if before != after:
-        raise ValueError("Native navigation-bar frame changed across screenshot capture")
     real_size = metadata["deviceInfo"]["realDisplaySize"]
     if real_size != f"{png.width}x{png.height}":
         raise ValueError("Native realDisplaySize differs from full-resolution PNG dimensions")
@@ -239,6 +313,23 @@ def analyze_navigation_bar(metadata_path, metadata, stage, png):
         f"android-system-bars-{stage}-windows-before.xml")
     after_path = navigation_capture_path(metadata_path, capture["sourceAfter"],
         f"android-system-bars-{stage}-windows-after.xml")
+    taskbar_provenance = None
+    if metadata["systemBarsBefore"].get("navigationBar", {}).get("visible") is True:
+        before = native_navigation_bar(metadata["systemBarsBefore"])
+        after = native_navigation_bar(metadata["systemBarsAfter"])
+    else:
+        api_level = integer(int(metadata["deviceInfo"]["apiVersion"]), "apiVersion")
+        if (api_level not in (32, 33)
+                or metadata["png"] != f"shots/android-wide/{SEQUENCES[stage]:02}-theme-{stage}.png"):
+            raise ValueError("An absent navigationBar is only supported by the observed API32/33 wide Launcher taskbar contract")
+        absent_navigation_bar(metadata["systemBarsBefore"])
+        absent_navigation_bar(metadata["systemBarsAfter"])
+        before, taskbar_provenance = native_launcher_taskbar(before_path, png, app_package)
+        after, after_provenance = native_launcher_taskbar(after_path, png, app_package)
+        if taskbar_provenance != after_provenance:
+            raise ValueError("Native Launcher taskbar identity/ancestry/bounds changed across the original PNG")
+    if before != after:
+        raise ValueError("Native navigation-region frame changed across screenshot capture")
     buttons = native_xml_buttons(before_path, before, png, app_package)
     after_buttons = native_xml_buttons(after_path, after, png, app_package)
     if buttons != after_buttons:
@@ -246,8 +337,11 @@ def analyze_navigation_bar(metadata_path, metadata, stage, png):
     checks = {f"navigation_{button}_foreground": foreground_presence(
                   png, tuple(buttons[button]["rectangle_pixels"]))
               for button in NAVIGATION_BUTTONS}
-    return {"bar": before, "buttons": buttons, "checks": checks,
-            "source_before": str(before_path), "source_after": str(after_path)}
+    result = {"bar": before, "buttons": buttons, "checks": checks,
+              "source_before": str(before_path), "source_after": str(after_path)}
+    if taskbar_provenance is not None:
+        result["taskbar_provenance"] = taskbar_provenance
+    return result
 
 
 def analyze(metadata_path, stage):
@@ -285,7 +379,14 @@ def analyze(metadata_path, stage):
         "png": str(png_path),
         "png_size": [png.width, png.height],
         "api_level": api_level,
-        "coordinate_source": "mobile:getSystemBars native frame, unchanged physical pixels",
+        "coordinate_source": ("status: mobile:getSystemBars; navigation: enableMultiWindows native Launcher3 taskbar AX frame"
+                              if "taskbar_provenance" in navigation else
+                              "mobile:getSystemBars native frame, unchanged physical pixels"),
+        **({"native_taskbar_provenance": navigation["taskbar_provenance"],
+            "navigation_frame_source": "native_launcher_taskbar_hierarchy",
+            "reported_navigation_bar_before": metadata["systemBarsBefore"]["navigationBar"],
+            "reported_navigation_bar_after": metadata["systemBarsAfter"]["navigationBar"]}
+           if "taskbar_provenance" in navigation else {}),
         "native_status_bar": before,
         "native_navigation_bar": navigation["bar"],
         "native_navigation_buttons": navigation["buttons"],

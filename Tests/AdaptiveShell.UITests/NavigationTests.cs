@@ -24,9 +24,10 @@ public class NavigationTests : BaseTest
         var counter = Driver.WaitForAccessibilityId("counterBtn");
         counter.Click();
 
-        // 点击触发重渲染后原引用可能失效,重新取一次再断言
-        var updated = Driver.WaitForAccessibilityId("counterBtn");
-        Assert.That(updated.Text, Does.Contain("1"),
+        // Read the actual updated text after the one click, within the original lookup deadline.
+        var updatedText = Driver.WaitForAccessibilityIdText("counterBtn",
+            text => text.Contains("1", StringComparison.Ordinal));
+        Assert.That(updatedText, Does.Contain("1"),
             "Counter button text should update after clicking.");
     }
 

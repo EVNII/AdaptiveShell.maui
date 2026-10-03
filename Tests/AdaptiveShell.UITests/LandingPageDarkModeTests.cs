@@ -112,18 +112,31 @@ public class LandingPageDarkModeTests : BaseTest
         var counter = Driver.WaitForAccessibilityId("counterBtn");
         var before = counter.Text;
         counter.Click();
-        var changed = new WebDriverWait(Driver, TimeSpan.FromSeconds(30));
-        changed.IgnoreExceptionTypes(typeof(StaleElementReferenceException));
-        var after = changed.Until(driver =>
+        string after;
+        try
         {
-            foreach (var locator in new[] { MobileBy.AccessibilityId("counterBtn"), MobileBy.Id("counterBtn") })
+            after = Driver.WaitForAccessibilityIdText("counterBtn", text => text != before, 30);
+        }
+        catch (WebDriverTimeoutException)
+        {
+            // Capture before the original finally restores appearance and restarts the app.
+            // Use a distinct failure name so TearDown cannot overwrite this native state.
+            try
             {
-                var element = driver.FindElements(locator).FirstOrDefault(e => e.Displayed && e.Enabled);
-                if (element is not null && element.Text != before)
-                    return element.Text;
+                Shots.SaveFailure(Driver, TestContext.CurrentContext.Test.ClassName!,
+                    $"{TestContext.CurrentContext.Test.Name}-{child}-before-cleanup");
             }
-            return null;
-        });
+            catch (Exception captureError)
+            {
+                TestContext.Out.WriteLine($"Failed to capture pre-cleanup child PNG: {captureError.Message}");
+            }
+            try { SaveSource("landing-child-timeout.xml"); }
+            catch (Exception captureError)
+            {
+                TestContext.Out.WriteLine($"Failed to capture pre-cleanup child XML: {captureError.Message}");
+            }
+            throw;
+        }
         Assert.That(after, Is.Not.Null.And.Not.Empty.And.Not.EqualTo(before),
             $"The {child} child counter must respond to an actual click in dark mode.");
         Shots.Save(Driver, $"landing-dark-{child}-child-clicked", sequence);
