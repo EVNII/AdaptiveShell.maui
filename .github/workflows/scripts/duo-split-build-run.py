@@ -425,7 +425,7 @@ def boot_after_testhost(marker, deadline):
           total_remaining_seconds=remaining(deadline))
     native(["xcrun", "simctl", "boot", udid], "duo-testhost-boot.txt", 60)
     native(["xcrun", "simctl", "bootstatus", udid, "-b"], "duo-testhost-bootstatus.txt", 600)
-    model = native(["xcrun", "simctl", "getenv", udid, "SIMULATOR_MODEL_IDENTIFIER"], "duo-model.txt", 30)
+    model = native(["xcrun", "simctl", "getenv", udid, "SIMULATOR_MODEL_IDENTIFIER"], "duo-model.txt", 120)
     if model != "iPhone19,4":
         raise ValueError("Actual booted simulator model is not iPhone19,4")
     displays = native(["xcrun", "simctl", "io", udid, "enumerate"], "duo-displays.txt", 30)
