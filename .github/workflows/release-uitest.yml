@@ -1,4 +1,4 @@
-name: Duo Bounded Capture E2E
+name: Duo Official Shell Control
 
 on:
   workflow_dispatch:
@@ -43,7 +43,7 @@ jobs:
         run: dotnet workload install maui-ios --from-rollback-file workloads.rollback.json
       - name: Prepare opt-in diagnostic partial manifest before normal build signing
         run: |
-          python3 -c 'import os,re,pathlib,plistlib; assert os.environ["GITHUB_ACTIONS"]=="true" and os.environ["GITHUB_JOB"]=="build-ios-27-1-duo" and re.fullmatch("[0-9a-f]{40}",os.environ["GITHUB_SHA"]); p=pathlib.Path("TestResults/duo-visibility-diagnostic.plist"); assert not p.exists(); p.write_bytes(plistlib.dumps({"AShellDuoVisibilityDiagnostic":True,"AShellDuoVisibilityDiagnosticSource":os.environ["GITHUB_SHA"]}))'
+          python3 -c 'import os,re,pathlib,plistlib; assert os.environ["GITHUB_ACTIONS"]=="true" and os.environ["GITHUB_JOB"]=="build-ios-27-1-duo" and re.fullmatch("[0-9a-f]{40}",os.environ["GITHUB_SHA"]); p=pathlib.Path("TestResults/duo-visibility-diagnostic.plist"); assert not p.exists(); p.write_bytes(plistlib.dumps({"AShellDuoVisibilityDiagnostic":True,"AShellDuoVisibilityDiagnosticSource":os.environ["GITHUB_SHA"],"AShellDuoOfficialShellControl":True,"AShellDuoOfficialShellControlSource":os.environ["GITHUB_SHA"]}))'
       - name: Build the same Duo app using SDK27.1
         timeout-minutes: 20
         run: |
@@ -52,7 +52,7 @@ jobs:
           APP="Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app"
           SDK=$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$APP/Info.plist")
           test "$SDK" = "iphonesimulator27.1"
-          python3 -c 'import os,plistlib,pathlib; x=plistlib.loads(pathlib.Path("Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app/Info.plist").read_bytes()); assert x.get("AShellDuoVisibilityDiagnostic") is True and x.get("AShellDuoVisibilityDiagnosticSource")==os.environ["GITHUB_SHA"]'
+          python3 -c 'import os,plistlib,pathlib; x=plistlib.loads(pathlib.Path("Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app/Info.plist").read_bytes()); assert x.get("AShellDuoVisibilityDiagnostic") is True and x.get("AShellDuoVisibilityDiagnosticSource")==os.environ["GITHUB_SHA"] and x.get("AShellDuoOfficialShellControl") is True and x.get("AShellDuoOfficialShellControlSource")==os.environ["GITHUB_SHA"]'
           codesign --verify --strict "$APP"
           plutil -p "$APP/Info.plist" > TestResults/duo-build-info.txt
           xcrun vtool -show-build "$APP/ExampleAShellApp" > TestResults/duo-native-build.txt
@@ -101,6 +101,7 @@ jobs:
       DUO_REMOVE_UNUSED_27_0_RUNTIME: 'true'
       DUO_DIAGNOSTIC_DISABLE_SPOTLIGHT_INDEXING: 'true'
       DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED: 'true'
+      DUO_DIAGNOSTIC_OFFICIAL_SHELL_CONTROL: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -205,7 +206,7 @@ jobs:
               need(sys.platform == 'darwin' and all(os.environ.get(k) == v for k, v in {
                   'GITHUB_ACTIONS': 'true', 'RUNNER_OS': 'macOS', 'RUNNER_ENVIRONMENT': 'github-hosted',
                   'GITHUB_REPOSITORY': 'EVNII/AdaptiveShell.maui', 'GITHUB_JOB': 'uitest-ios-27-1-duo',
-                  'GITHUB_REF_NAME': 'codex/duo-bounded-capture', 'GITHUB_WORKFLOW': 'Duo Bounded Capture E2E'
+                  'GITHUB_REF_NAME': 'codex/duo-official-shell-control', 'GITHUB_WORKFLOW': 'Duo Official Shell Control'
               }.items()), 'Exact hosted Duo CI scope rejected')
               head = os.environ.get('GITHUB_SHA', '')
               need(re.fullmatch('[0-9a-f]{40}', head) and os.environ.get('GITHUB_WORKFLOW_SHA') == head, 'Workflow/source identity differs')

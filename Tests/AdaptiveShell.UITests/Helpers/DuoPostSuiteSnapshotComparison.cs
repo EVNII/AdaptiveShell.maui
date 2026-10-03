@@ -56,8 +56,8 @@ internal static class DuoPostSuiteSnapshotComparison
             Need(Env("UITEST_DUO_POST_SUITE_SNAPSHOT") == "true" && OperatingSystem.IsMacOS()
                 && Env("GITHUB_ACTIONS") == "true" && Env("RUNNER_ENVIRONMENT") == "github-hosted"
                 && Env("GITHUB_REPOSITORY") == "EVNII/AdaptiveShell.maui" && Env("GITHUB_JOB") == "uitest-ios-27-1-duo"
-                && Env("GITHUB_REF_NAME") == "codex/duo-bounded-capture"
-                && Env("GITHUB_WORKFLOW") == "Duo Bounded Capture E2E" && Env("GITHUB_WORKFLOW_SHA") == head
+                && Env("GITHUB_REF_NAME") == "codex/duo-official-shell-control"
+                && Env("GITHUB_WORKFLOW") == "Duo Official Shell Control" && Env("GITHUB_WORKFLOW_SHA") == head
                 && head is { Length: 40 } && head.All(c => "0123456789abcdef".Contains(c))
                 && Guid.TryParseExact(udid, "D", out _) && udid == Env("DUO_DEVICE_UDID")
                 && AppiumSetup.Platform == "ios" && AppiumSetup.Form == "duo" && AppiumSetup.BundleId == Bundle

@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timezone
 
 BUNDLE = "com.companyname.exampleashellapp"
-BRANCH = "codex/duo-bounded-capture"
+BRANCH = "codex/duo-official-shell-control"
 MODEL = "iPhone19,4"
 LOG = "ashell-duo-visibility.jsonl"
 
@@ -165,6 +165,45 @@ def validate_native_log(raw, head):
                      'scope': 'read-only native diagnostic provenance; never WDA visibility or UI acceptance'}
 
 
+
+def validate_control_log(raw, head):
+    """Actual official Shell identity only; never replaces any original UI result."""
+    require(isinstance(raw, bytes) and 0 < len(raw) <= 8 * 1024 * 1024
+            and raw.endswith(b"\n"), "Actual control log is empty/oversized/partial")
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            require(key not in result, "Duplicate control property")
+            result[key] = value
+        return result
+    phases = {}; records = []
+    for line in raw.splitlines():
+        record = json.loads(line.decode("utf-8"), object_pairs_hook=pairs)
+        require(type(record) is dict and type(record.get("schema")) is int and record["schema"] == 1
+                and record.get("bundle_id") == BUNDLE and record.get("signed_control_flag") is True
+                and record.get("signed_control_source") == head and record.get("ui_acceptance") is False
+                and record.get("managed_root_type") == "Microsoft.Maui.Controls.Shell"
+                and record.get("native_idiom") == record.get("maui_idiom") == "Phone"
+                and record.get("simulator_model") == MODEL
+                and re.fullmatch(r"27\.1(?:\.\d+)?", str(record.get("os_version", ""))),
+                "Actual stock Shell source/type/model/idiom differs")
+        pid = record.get("process_id"); phase = record.get("phase")
+        require(type(pid) is int and pid > 1
+                and phase in ("managed-root-created", "window-created")
+                and phase not in phases.setdefault(pid, set()), "Control PID/phase is invalid or duplicated")
+        require(isinstance(record.get("utc"), str)
+                and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|\+00:00)", record["utc"]),
+                "Control actual time is not explicit UTC")
+        datetime.fromisoformat(record["utc"].replace("Z", "+00:00"))
+        if phase == "window-created":
+            require("managed-root-created" in phases[pid], "Control native-window phase preceded its managed root")
+        phases[pid].add(phase); records.append(record)
+    require(records and all(x == {"managed-root-created", "window-created"} for x in phases.values()),
+            "Actual control identity phases are incomplete")
+    return records, {"processes": len(phases), "root_type": "Microsoft.Maui.Controls.Shell",
+                     "scope": "official Shell identity only; original13 remains the UI result", "ui_acceptance": False}
+
+
 def collect(workspace):
     started = time.monotonic()
     deadline = started + 60
@@ -219,7 +258,7 @@ def collect(workspace):
                 and sys.platform == "darwin" and os.environ.get("GITHUB_JOB") == "uitest-ios-27-1-duo"
                 and os.environ.get("GITHUB_REPOSITORY") == "EVNII/AdaptiveShell.maui"
                 and os.environ.get("GITHUB_REF_NAME") == BRANCH
-                and os.environ.get("GITHUB_WORKFLOW") == "Duo Bounded Capture E2E"
+                and os.environ.get("GITHUB_WORKFLOW") == "Duo Official Shell Control"
                 and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
                 and os.environ.get("UITEST_DUO_VISIBILITY_DIAGNOSTIC") == "true"
                 and os.environ.get("UITEST_PLATFORM") == "ios" and os.environ.get("UITEST_FORM") == "duo",
@@ -297,14 +336,20 @@ def collect(workspace):
                         model=MODEL, sdk="27.1", app_container=str(containers["app"]), data_container=str(containers["data"]),
                         installed_info_sha256=hashlib.sha256(info_bytes).hexdigest(), executable_sha256=digest(executable),
                         preinstall_proof_sha256=digest(preinstall_path))
-        log_path = containers["data"] / "Documents" / LOG
-        require(log_path.is_file() and not log_path.is_symlink(), "Actual native visibility log is absent/nonregular")
+        control = os.environ.get("DUO_DIAGNOSTIC_OFFICIAL_SHELL_CONTROL")
+        if control is not None:
+            require(control == "true" and info.get("AShellDuoOfficialShellControl") is True
+                    and info.get("AShellDuoOfficialShellControlSource") == head,
+                    "Actual installed control flag/source differs")
+        log_name = "ashell-duo-official-shell-control.jsonl" if control == "true" else LOG
+        log_path = containers["data"] / "Documents" / log_name
+        require(log_path.is_file() and not log_path.is_symlink(), "Actual native diagnostic log is absent/nonregular")
         raw = log_path.read_bytes()
-        raw_path = out / LOG
+        raw_path = out / log_name
         raw_path.write_bytes(raw)  # Preserve actual bytes before parsing; never synthesize a native record.
-        evidence["raw_log"] = {"source_path": str(log_path), "file": LOG, "bytes": len(raw),
+        evidence["raw_log"] = {"source_path": str(log_path), "file": log_name, "bytes": len(raw),
                                "sha256": hashlib.sha256(raw).hexdigest()}
-        records, native_summary = validate_native_log(raw, head)
+        records, native_summary = (validate_control_log(raw, head) if control == "true" else validate_native_log(raw, head))
         evidence["native_record_summary"] = native_summary
         require(time.monotonic() < deadline, "Collector shared60s deadline exceeded")
         evidence.update(status="captured", records=len(records), first_record_utc=records[0]["utc"], last_record_utc=records[-1]["utc"])

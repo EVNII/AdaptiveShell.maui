@@ -656,6 +656,13 @@ def preinstall_verified_aut(marker, deadline):
                     "CFBundleExecutable": "ExampleAShellApp", "DTSDKName": "iphonesimulator27.1", "DTSDKBuild": "24A94403"}
         if any(info.get(key) != value for key, value in expected.items()):
             raise ValueError("Actual AUT bundle/executable/SDK27.1 build identity differs")
+        control = os.environ.get("DUO_DIAGNOSTIC_OFFICIAL_SHELL_CONTROL")
+        if control is not None:
+            if (control != "true" or info.get("AShellDuoOfficialShellControl") is not True
+                    or info.get("AShellDuoOfficialShellControlSource") != marker["head_sha"]):
+                raise ValueError("Signed actual official Shell control flag/source differs")
+            expected.update(AShellDuoOfficialShellControl=True,
+                            AShellDuoOfficialShellControlSource=info["AShellDuoOfficialShellControlSource"])
         executable = app / expected["CFBundleExecutable"]
         if executable.is_symlink() or not executable.is_file():
             raise ValueError("AUT executable is not a regular file")
@@ -932,8 +939,8 @@ def deferred_appium_identity():
     require_duo_ci_scope()
     expected = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
                 "GITHUB_REPOSITORY": "EVNII/AdaptiveShell.maui",
-                "GITHUB_REF_NAME": "codex/duo-bounded-capture",
-                "GITHUB_WORKFLOW": "Duo Bounded Capture E2E",
+                "GITHUB_REF_NAME": "codex/duo-official-shell-control",
+                "GITHUB_WORKFLOW": "Duo Official Shell Control",
                 "DUO_DIAGNOSTIC_DEFER_APPIUM_UNTIL_INSTALLED": "true"}
     if any(os.environ.get(key) != value for key, value in expected.items()):
         raise ValueError("Deferred Appium is limited to its explicit isolated hosted source")
@@ -1269,8 +1276,8 @@ def require_selection_diagnostic_identity():
             or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
             or os.environ.get("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
             or os.environ.get("GITHUB_JOB") != "uitest-ios-27-1-duo"
-            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-bounded-capture"
-            or os.environ.get("GITHUB_WORKFLOW") != "Duo Bounded Capture E2E"
+            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-official-shell-control"
+            or os.environ.get("GITHUB_WORKFLOW") != "Duo Official Shell Control"
             or os.environ.get("GITHUB_WORKFLOW_SHA") != os.environ.get("GITHUB_SHA")
             or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))):
         raise ValueError("This helper is restricted to the exact current13 selection diagnostic workflow")
