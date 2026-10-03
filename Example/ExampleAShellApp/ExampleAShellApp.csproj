@@ -80,4 +80,8 @@
 	  <ProjectReference Include="..\..\AdaptiveShell.csproj" />
 	</ItemGroup>
 
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-ios26.5' And '$(AShellDuoVisibilityDiagnosticManifest)' != ''">
+    <PartialAppManifest Include="$(AShellDuoVisibilityDiagnosticManifest)" Overwrite="false" />
+  </ItemGroup>
+
 </Project>

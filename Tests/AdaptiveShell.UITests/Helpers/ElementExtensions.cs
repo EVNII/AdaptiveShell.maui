@@ -1,3 +1,4 @@
+using NUnit.Framework;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Appium;
 using OpenQA.Selenium.Support.UI;
@@ -17,7 +18,23 @@ public static class ElementExtensions
     public static AppiumElement WaitForAccessibilityId(
         this AppiumDriver driver, string id, int timeoutSeconds = 0)
     {
-        return WaitForAny(driver, ResolveTimeout(timeoutSeconds), MobileBy.AccessibilityId(id), MobileBy.Id(id));
+        var resolvedTimeout = ResolveTimeout(timeoutSeconds);
+        try
+        {
+            return WaitForAny(driver, resolvedTimeout, MobileBy.AccessibilityId(id), MobileBy.Id(id));
+        }
+        catch (WebDriverTimeoutException)
+        {
+            if (id == "counterBtn")
+            {
+                try { DuoVisibilityDiagnostics.CaptureCounterTimeout(driver, resolvedTimeout); }
+                catch (Exception error)
+                {
+                    TestContext.Out.WriteLine("Duo visibility collector error; preserving original timeout: " + error.Message);
+                }
+            }
+            throw;
+        }
     }
 
     // Keep text reads inside the same polling deadline as native lookup. A system

@@ -36,12 +36,22 @@ namespace AdaptiveShell.Platforms.MacIOS
 
         private UIViewController CreatePage(AShellContent item, bool wrapInNavigation = true)
         {
+#if IOS
+            var diagnosticCall = DuoVisibilityProbe.Enabled ? ++_duoProviderCall : 0;
+            _contentToContainerMap.TryGetValue(item, out var diagnosticExisting);
+            var diagnosticParent = DuoVisibilityProbe.Enabled ? diagnosticExisting?.ParentViewController : null;
+            TraceDuoVisibility("provider-before", diagnosticCall, item, diagnosticParent, force: true);
+#endif
             // 幂等:容器只创建一次,组导航 push 与 tab provider 共享同一实例
             if (_contentToContainerMap.TryGetValue(item, out var existing))
             {
-                return wrapInNavigation
+                var returnedExisting = wrapInNavigation
                     ? new UINavigationController(existing)
-                    : existing;
+                    : (UIViewController)existing;
+#if IOS
+                TraceDuoVisibility("provider-after", diagnosticCall, item, diagnosticParent, returnedExisting, force: true);
+#endif
+                return returnedExisting;
             }
 
             var page = ((IAShellContentController)item).page;
@@ -52,9 +62,13 @@ namespace AdaptiveShell.Platforms.MacIOS
             var container = new PageContainerViewController(controller);
             _contentToContainerMap[item] = container;
 
-            return wrapInNavigation
+            var returned = wrapInNavigation
                 ? new UINavigationController(container)
-                : container;
+                : (UIViewController)container;
+#if IOS
+            TraceDuoVisibility("provider-after", diagnosticCall, item, diagnosticParent, returned, force: true);
+#endif
+            return returned;
         }
 
         public void UpdateItems()
@@ -363,7 +377,26 @@ namespace AdaptiveShell.Platforms.MacIOS
             {
                 if (_contentToUITabMap.TryGetValue(content, out var tab))
                 {
-                    SelectedTab = tab;
+                    var actualSelectedTab = SelectedTab;
+                    var skipSelectionWrite = actualSelectedTab is not null
+                        && actualSelectedTab.Handle == tab.Handle;
+#if IOS
+                    var selectionCall = DuoVisibilityProbe.Enabled ? ++_duoSelectionCall : 0;
+                    TraceDuoSelection("current-item-selection-before", selectionCall, content, tab,
+                        actualSelectedTab, null, skipSelectionWrite);
+#endif
+                    if (!skipSelectionWrite)
+                    {
+                        SelectedTab = tab;
+                    }
+#if IOS
+                    if (DuoVisibilityProbe.Enabled)
+                    {
+                        var actualSelectedTabAfter = SelectedTab;
+                        TraceDuoSelection("current-item-selection-after", selectionCall, content, tab,
+                            actualSelectedTab, actualSelectedTabAfter, skipSelectionWrite);
+                    }
+#endif
                 }
 
                 var group = FindGroupOf(content);
@@ -419,6 +452,9 @@ namespace AdaptiveShell.Platforms.MacIOS
                 UITab? previousTab)
             {
                 _owner.HandleTabSelected(selectedTab);
+#if IOS
+                _owner.TraceDuoVisibility("did-select-tab", force: true);
+#endif
             }
         }
 
@@ -434,7 +470,85 @@ namespace AdaptiveShell.Platforms.MacIOS
             {
                 UpdateGroupChildPresentation(group, content, animated: false);
             }
+#if IOS
+            TraceDuoVisibility("post-layout");
+#endif
         }
+
+#if IOS
+        long _duoProviderCall;
+        long _duoSelectionCall;
+        bool _duoDiagnosticDisposed;
+        Foundation.NSTimer? _duoDiagnosticTimer;
+
+        public override void ViewDidAppear(bool animated)
+        {
+            base.ViewDidAppear(animated);
+            if (!DuoVisibilityProbe.Enabled || _duoDiagnosticDisposed) return;
+            TraceDuoVisibility("root-did-appear", force: true);
+            if (_duoDiagnosticTimer is not null) return;
+            var weakOwner = new WeakReference<AShellViewBase>(this);
+            _duoDiagnosticTimer = Foundation.NSTimer.CreateRepeatingScheduledTimer(TimeSpan.FromSeconds(1), timer =>
+            {
+                if (weakOwner.TryGetTarget(out var owner) && !owner._duoDiagnosticDisposed)
+                    owner.TraceDuoVisibility("tick");
+                else
+                    timer.Invalidate();
+            });
+        }
+
+        public override void ViewDidDisappear(bool animated)
+        {
+            StopDuoVisibilityTimer();
+            base.ViewDidDisappear(animated);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            _duoDiagnosticDisposed = true;
+            if (disposing) StopDuoVisibilityTimer();
+            base.Dispose(disposing);
+        }
+
+        void StopDuoVisibilityTimer()
+        {
+            _duoDiagnosticTimer?.Invalidate();
+            _duoDiagnosticTimer?.Dispose();
+            _duoDiagnosticTimer = null;
+        }
+
+        void TraceDuoVisibility(string phase, long providerCall = 0, AShellContent? content = null,
+            UIViewController? parentBefore = null, UIViewController? returned = null, bool force = false)
+        {
+            if (!DuoVisibilityProbe.Enabled || _duoDiagnosticDisposed) return;
+            try
+            {
+                DuoVisibilityProbe.Record(this, phase, providerCall, content, parentBefore, returned,
+                    _contentToContainerMap.Select(pair =>
+                        (pair.Key, (UIViewController)pair.Value, pair.Value.ContentController, pair.Value.ContentInsets)), force);
+            }
+            catch (Exception ex)
+            {
+                // Read-only diagnostics must never break UIKit navigation or force a new view.
+                DuoVisibilityProbe.RecordError(phase, ex);
+            }
+        }
+
+        void TraceDuoSelection(string phase, long selectionCall, AShellContent content, UITab target,
+            UITab? actualBefore, UITab? actualAfter, bool skipped)
+        {
+            if (!DuoVisibilityProbe.Enabled || _duoDiagnosticDisposed) return;
+            try
+            {
+                DuoVisibilityProbe.RecordSelection(this, phase, selectionCall, content, target,
+                    actualBefore, actualAfter, skipped);
+            }
+            catch (Exception ex)
+            {
+                DuoVisibilityProbe.RecordError(phase, ex);
+            }
+        }
+#endif
 
         private void OnContentFullBleedChanged(object? sender, EventArgs e)
         {
@@ -522,6 +636,9 @@ namespace AdaptiveShell.Platforms.MacIOS
         private sealed class PageContainerViewController : UIViewController
         {
             readonly UIViewController _content;
+#if IOS
+            internal UIViewController ContentController => _content;
+#endif
 
             UIEdgeInsets _contentInsets;
 
