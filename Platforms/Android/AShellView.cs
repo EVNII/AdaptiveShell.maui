@@ -20,7 +20,7 @@ using ImageButton = Android.Widget.ImageButton;
 
 namespace AdaptiveShell.Platforms.Android
 {
-    public class AShellView : IDisposable
+    public partial class AShellView : IDisposable
     {
         // Material 3 window size class: 紧凑宽度(<600dp)使用底部导航栏,否则使用侧边 NavigationRail
         const int CompactWidthBreakpointDp = 600;
@@ -178,9 +178,16 @@ namespace AdaptiveShell.Platforms.Android
         bool _lastLightNavigationBars;
         bool? _previousNavigationBarContrastEnforced;
 
+        global::Android.Views.Window? _themeBackgroundWindow;
+        global::Android.Graphics.Drawables.ColorDrawable? _previousThemeBackground;
+        global::Android.Graphics.Drawables.ColorDrawable? _ownedThemeBackground;
+        int _lastThemeBackgroundColor;
+        global::Android.Views.Window? _themeBackgroundHostChangedWindow;
+
         private void OnRootAttachedToWindow(object? sender,
             global::Android.Views.View.ViewAttachedToWindowEventArgs e)
         {
+            StartNavigationAppearanceDiagnostics();
             // WindowHandler initializes system bars before content is attached. Posting also
             // lets MAUI finish mapping the Page background used behind the top inset.
             _overlayLayout.Post(UpdateStatusBarAppearance);
@@ -190,6 +197,8 @@ namespace AdaptiveShell.Platforms.Android
         private void OnRootDetachedFromWindow(object? sender,
             global::Android.Views.View.ViewDetachedFromWindowEventArgs e)
         {
+            RecordNavigationAppearanceDiagnostic("detached", force: true);
+            StopNavigationAppearanceDiagnostics();
             RestoreStatusBarAppearance();
             RestoreNavigationBarAppearance();
         }
@@ -269,6 +278,19 @@ namespace AdaptiveShell.Platforms.Android
 
         private void UpdateNavigationBarAppearance()
         {
+            RecordNavigationAppearanceDiagnostic("before-update", force: true);
+            try
+            {
+                UpdateNavigationBarAppearanceCore();
+            }
+            finally
+            {
+                RecordNavigationAppearanceDiagnostic("after-update", force: true);
+            }
+        }
+
+        private void UpdateNavigationBarAppearanceCore()
+        {
             if (_disposed || !_overlayLayout.IsAttachedToWindow
                 || !OperatingSystem.IsAndroidVersionAtLeast(26)
                 || _activity?.Window is not { } window)
@@ -318,6 +340,9 @@ namespace AdaptiveShell.Platforms.Android
                 RestoreNavigationBarAppearance();
                 return;
             }
+
+            UpdateThemeWindowBackground(window,
+                OperatingSystem.IsAndroidVersionAtLeast(36) && targetSdk >= 36 && transparent);
 
             var controller = WindowCompat.GetInsetsController(window, window.DecorView);
             if (controller is null)
@@ -409,8 +434,120 @@ namespace AdaptiveShell.Platforms.Android
             return ((uint)color >> 24) == 255;
         }
 
+        private void UpdateThemeWindowBackground(global::Android.Views.Window window, bool forcedEdgeToEdge)
+        {
+            if (_themeBackgroundWindow is not null && !ReferenceEquals(_themeBackgroundWindow, window))
+            {
+                RestoreThemeWindowBackground();
+            }
+            if (ReferenceEquals(_themeBackgroundHostChangedWindow, window))
+            {
+                return;
+            }
+            var owned = _ownedThemeBackground;
+            if (owned is not null
+                && (window.DecorView.Background is not global::Android.Graphics.Drawables.ColorDrawable current
+                    || !current.Equals(owned) || current.Color.ToArgb() != _lastThemeBackgroundColor))
+            {
+                // A later host background wins, including edits to the same Drawable.
+                _themeBackgroundHostChangedWindow = window;
+                RestoreThemeWindowBackground();
+                return;
+            }
+            if (!forcedEdgeToEdge
+                || !RootCoversWindow(window)
+                || window.DecorView.Background is not global::Android.Graphics.Drawables.ColorDrawable original
+                || original.Alpha != 255 || original.Color.A != 255)
+            {
+                RestoreThemeWindowBackground();
+                return;
+            }
+
+            using var style = _activity!.ObtainStyledAttributes(
+                new[] { global::Android.Resource.Attribute.WindowBackground });
+            // Read the current native theme; never mutate or dispose its shared Drawable.
+            if (style.GetDrawable(0) is not global::Android.Graphics.Drawables.ColorDrawable theme
+                || theme.Alpha != 255 || theme.Color.A != 255)
+            {
+                RestoreThemeWindowBackground();
+                return;
+            }
+            int color = theme.Color.ToArgb();
+            if (original.Color.ToArgb() == color)
+            {
+                return;
+            }
+
+            // Android 16 derives its edge-to-edge navigation policy from the Window
+            // background. A fresh Drawable updates that policy through the public API;
+            // changing the color of the existing Drawable would skip that update.
+            var replacement = new global::Android.Graphics.Drawables.ColorDrawable(
+                new global::Android.Graphics.Color(color));
+            window.SetBackgroundDrawable(replacement);
+            if (window.DecorView.Background is not global::Android.Graphics.Drawables.ColorDrawable applied
+                || !applied.Equals(replacement))
+            {
+                // A composite background is not evidence of the Window's original
+                // Drawable. Do not take ownership or overwrite it on a later callback.
+                _themeBackgroundHostChangedWindow = window;
+                RestoreThemeWindowBackground();
+                return;
+            }
+            _themeBackgroundWindow ??= window;
+            _previousThemeBackground ??= original;
+            _ownedThemeBackground = replacement;
+            _lastThemeBackgroundColor = color;
+            // Only our replaced instance is released, after the Window stopped using it.
+            owned?.Dispose();
+        }
+
+        private bool RootCoversWindow(global::Android.Views.Window window)
+        {
+            var decor = window.DecorView;
+            if (!_overlayLayout.IsAttachedToWindow || _overlayLayout.Visibility != ViewStates.Visible
+                || _overlayLayout.Alpha != 1f || decor.Visibility != ViewStates.Visible || decor.Alpha != 1f
+                || _overlayLayout.Background is not global::Android.Graphics.Drawables.ColorDrawable root
+                || root.Alpha != 255 || root.Color.A != 255
+                || decor.Width <= 0 || decor.Height <= 0
+                || _overlayLayout.Width != decor.Width || _overlayLayout.Height != decor.Height)
+            {
+                return false;
+            }
+            var decorLocation = new int[2];
+            var rootLocation = new int[2];
+            decor.GetLocationOnScreen(decorLocation);
+            _overlayLayout.GetLocationOnScreen(rootLocation);
+            return rootLocation[0] == decorLocation[0] && rootLocation[1] == decorLocation[1];
+        }
+
+        private void RestoreThemeWindowBackground()
+        {
+            if (_themeBackgroundWindow is { } window && _ownedThemeBackground is { } owned)
+            {
+                var current = window.DecorView.Background;
+                if (ReferenceEquals(_activity?.Window, window)
+                    && current is global::Android.Graphics.Drawables.ColorDrawable color
+                    && color.Equals(owned) && color.Color.ToArgb() == _lastThemeBackgroundColor
+                    && _previousThemeBackground is { } previous)
+                {
+                    window.SetBackgroundDrawable(previous);
+                    current = window.DecorView.Background;
+                }
+                // Never dispose a host/theme Drawable, or our instance while the host
+                // still references it (for example after editing its color in place).
+                if (current is null || !current.Equals(owned))
+                {
+                    owned.Dispose();
+                }
+            }
+            _themeBackgroundWindow = null;
+            _previousThemeBackground = null;
+            _ownedThemeBackground = null;
+        }
+
         private void RestoreNavigationBarAppearance()
         {
+            RestoreThemeWindowBackground();
             if (_navigationAppearanceWindow is { } window
                 && ReferenceEquals(_activity?.Window, window))
             {
@@ -1113,6 +1250,7 @@ namespace AdaptiveShell.Platforms.Android
                 return;
             }
 
+            StopNavigationAppearanceDiagnostics();
             _disposed = true;
             _virtualView.PropertyChanged -= OnRootBackgroundChanged;
             _overlayLayout.ViewAttachedToWindow -= OnRootAttachedToWindow;
