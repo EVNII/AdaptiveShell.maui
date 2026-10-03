@@ -121,5 +121,7 @@ jobs:
             TestResults/android-*.json
             TestResults/android-*.xml
             TestResults/android-navigation-appearance-*.jsonl
+            TestResults/android-navigation-appearance-*.stdout
+            TestResults/android-navigation-appearance-*.stderr
             appium.log
           if-no-files-found: ignore
