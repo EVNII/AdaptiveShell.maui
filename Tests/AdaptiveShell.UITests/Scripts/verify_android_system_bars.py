@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify visible status-bar foreground from actual Android theme PNG captures.
+"""Verify status-bar and native three-key navigation foreground from actual Android PNGs.
 
 Usage: python3 verify_android_system_bars.py ARTIFACT_ROOT --strict
 Consumes exactly three android-system-bars-{stage}.json captures. System-bar
@@ -8,12 +8,20 @@ coordinates unchanged; PNG pixels are compared directly, without density scaling
 
 Primary contract:
 https://github.com/appium/appium-uiautomator2-driver#mobile-getsystembars
-https://github.com/appium/appium-android-driver/blob/v14.0.8/lib/commands/system-bars.ts#L106-L124
+https://github.com/appium/appium-android-driver/blob/v14.2.0/lib/commands/system-bars.ts#L106-L124
 
 The foreground test is layout-dependent presence evidence, not identification of
 individual system icons. API 26/27 keep the stock clock on the right; API >=28
 also requires contrasting foreground in the left clock area. Regions are derived
 only from the captured native bar rectangle. No status-bar height is assumed.
+
+Navigation buttons are independently scoped by original enableMultiWindows XML
+before/after the PNG: displayed/clickable SystemUI or Launcher back/home/recent_apps
+resource IDs, stable native screen bounds wholly within mobile:getSystemBars.
+No PNG-derived crop, guessed density, or tablet-taskbar foreground substitutes.
+https://github.com/appium/appium-uiautomator2-driver/blob/v8.7.0/README.md#settings-api
+https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-15.0.0_r1/packages/SystemUI/res/layout/back.xml
+https://android.googlesource.com/platform/packages/apps/Launcher3/+/refs/tags/android-15.0.0_r1/quickstep/src/com/android/launcher3/taskbar/NavbarButtonsViewController.java
 """
 
 import argparse
@@ -25,6 +33,7 @@ import re
 import struct
 import sys
 import zlib
+import xml.etree.ElementTree as ET
 
 from verify_mac_button_colors import PNG
 
@@ -129,6 +138,118 @@ def analyze_status_bar(png, bar, api_level):
     return checks
 
 
+NAVIGATION_BUTTONS = ("back", "home", "recent_apps")
+NAVIGATION_PACKAGES = {"com.android.systemui", "com.android.launcher3"}
+
+
+def native_navigation_bar(system_bars):
+    if not isinstance(system_bars, dict):
+        raise ValueError("mobile:getSystemBars must return an object")
+    bar = system_bars["navigationBar"]
+    if not isinstance(bar, dict) or bar.get("visible") is not True:
+        raise ValueError("Native navigation bar must be present and visible")
+    bounds = {key: integer(bar[key], f"navigationBar.{key}")
+              for key in ("x", "y", "width", "height")}
+    if (bounds["x"] < 0 or bounds["y"] < 0
+            or bounds["width"] <= 0 or bounds["height"] <= 0):
+        raise ValueError("Native navigation bar has invalid or empty bounds")
+    return bounds
+
+
+def native_xml_buttons(path, bar, png, app_package):
+    data = path.read_bytes()
+    if len(data) > 10 * 1024 * 1024 or b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+        raise ValueError("Native multi-window XML is too large or contains a DTD/entity")
+    root = ET.fromstring(data)
+    if root.tag != "hierarchy":
+        raise ValueError("Expected the original Android native hierarchy root")
+    if not any(node.get("package") == app_package for node in root.iter()):
+        raise ValueError("The tested app is absent from the native multi-window capture")
+    bar_rectangle = (bar["x"], bar["y"], bar["x"] + bar["width"], bar["y"] + bar["height"])
+    if not (0 <= bar_rectangle[0] < bar_rectangle[2] <= png.width
+            and 0 <= bar_rectangle[1] < bar_rectangle[3] <= png.height):
+        raise ValueError("Native navigation bar is outside the full-resolution original PNG")
+    result = {}
+    for button in NAVIGATION_BUTTONS:
+        expected_ids = {f"{package}:id/{button}" for package in NAVIGATION_PACKAGES}
+        matches = [node for node in root.iter() if node.get("resource-id") in expected_ids]
+        if len(matches) != 1:
+            raise ValueError(f"Expected one native {button} node; found {len(matches)}")
+        node = matches[0]
+        package = node.get("package")
+        if package not in NAVIGATION_PACKAGES or node.get("resource-id") != f"{package}:id/{button}":
+            raise ValueError(f"Native {button} package/resource-id disagree")
+        if any(node.get(attribute) != "true" for attribute in ("displayed", "enabled", "clickable")):
+            raise ValueError(f"Native {button} must be displayed, enabled, and clickable")
+        native_class = node.get("class")
+        if not native_class or not isinstance(native_class, str):
+            raise ValueError(f"Native {button} class is missing")
+        match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds", ""))
+        if not match:
+            raise ValueError(f"Native {button} bounds are missing or invalid")
+        rectangle = tuple(map(int, match.groups()))
+        if not (bar_rectangle[0] <= rectangle[0] < rectangle[2] <= bar_rectangle[2]
+                and bar_rectangle[1] <= rectangle[1] < rectangle[3] <= bar_rectangle[3]):
+            raise ValueError(f"Native {button} bounds are outside the native navigation bar")
+        result[button] = {"package": package, "resource_id": node.get("resource-id"),
+                          "class": native_class, "rectangle_pixels": list(rectangle)}
+    if len({item["package"] for item in result.values()}) != 1:
+        raise ValueError("The native navigation buttons belong to different system packages")
+    for index, first in enumerate(NAVIGATION_BUTTONS):
+        a = result[first]["rectangle_pixels"]
+        for second in NAVIGATION_BUTTONS[index + 1:]:
+            b = result[second]["rectangle_pixels"]
+            if max(a[0], b[0]) < min(a[2], b[2]) and max(a[1], b[1]) < min(a[3], b[3]):
+                raise ValueError(f"Native {first}/{second} bounds overlap")
+    return result
+
+
+def navigation_capture_path(metadata_path, value, expected):
+    if not isinstance(value, str) or value != expected:
+        raise ValueError(f"Expected original native capture {expected}")
+    path = (metadata_path.parent / value).resolve()
+    if not path.is_relative_to(metadata_path.parent.resolve()):
+        raise ValueError("Native navigation XML path escapes its metadata directory")
+    return path
+
+
+def analyze_navigation_bar(metadata_path, metadata, stage, png):
+    capture = metadata["multiWindowCapture"]
+    if not isinstance(capture, dict):
+        raise ValueError("Native navigation multi-window capture is missing")
+    for key in ("enabledBefore", "enabledDuringBefore", "enabledDuringAfter", "enabledRestored"):
+        if type(capture.get(key)) is not bool:
+            raise ValueError(f"multiWindowCapture.{key} must be the actual boolean setting readback")
+    if (capture["enabledDuringBefore"] is not True or capture["enabledDuringAfter"] is not True
+            or capture["enabledRestored"] != capture["enabledBefore"]):
+        raise ValueError("enableMultiWindows was not enabled throughout capture and restored exactly")
+    app_package = capture["appPackage"]
+    if not isinstance(app_package, str) or not re.fullmatch(r"[a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+", app_package):
+        raise ValueError("The actual tested app package is missing")
+    if app_package in NAVIGATION_PACKAGES:
+        raise ValueError("The tested app cannot pose as SystemUI or Launcher")
+    before = native_navigation_bar(metadata["systemBarsBefore"])
+    after = native_navigation_bar(metadata["systemBarsAfter"])
+    if before != after:
+        raise ValueError("Native navigation-bar frame changed across screenshot capture")
+    real_size = metadata["deviceInfo"]["realDisplaySize"]
+    if real_size != f"{png.width}x{png.height}":
+        raise ValueError("Native realDisplaySize differs from full-resolution PNG dimensions")
+    before_path = navigation_capture_path(metadata_path, capture["sourceBefore"],
+        f"android-system-bars-{stage}-windows-before.xml")
+    after_path = navigation_capture_path(metadata_path, capture["sourceAfter"],
+        f"android-system-bars-{stage}-windows-after.xml")
+    buttons = native_xml_buttons(before_path, before, png, app_package)
+    after_buttons = native_xml_buttons(after_path, after, png, app_package)
+    if buttons != after_buttons:
+        raise ValueError("Native navigation-button identity/bounds changed across screenshot capture")
+    checks = {f"navigation_{button}_foreground": foreground_presence(
+                  png, tuple(buttons[button]["rectangle_pixels"]))
+              for button in NAVIGATION_BUTTONS}
+    return {"bar": before, "buttons": buttons, "checks": checks,
+            "source_before": str(before_path), "source_after": str(after_path)}
+
+
 def analyze(metadata_path, stage):
     metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
     if (type(metadata.get("schemaVersion")) is not int or metadata["schemaVersion"] != 1
@@ -155,6 +276,8 @@ def analyze(metadata_path, stage):
             or integer(screen["height"], "screenSize.height") != png.height):
         raise ValueError("Native screen dimensions differ from original PNG dimensions")
     checks = analyze_status_bar(png, before, api_level)
+    navigation = analyze_navigation_bar(metadata_path, metadata, stage, png)
+    checks.update(navigation["checks"])
     return {
         "stage": stage,
         "visibility_status": "match" if all(check["status"] == "match" for check in checks.values()) else "mismatch",
@@ -164,7 +287,11 @@ def analyze(metadata_path, stage):
         "api_level": api_level,
         "coordinate_source": "mobile:getSystemBars native frame, unchanged physical pixels",
         "native_status_bar": before,
-        "scope": "Layout-dependent clock/status foreground presence; no individual-icon identity claim",
+        "native_navigation_bar": navigation["bar"],
+        "native_navigation_buttons": navigation["buttons"],
+        "navigation_source_before": navigation["source_before"],
+        "navigation_source_after": navigation["source_after"],
+        "scope": "Clock/status presence plus each native SystemUI/Launcher three-key node; no taskbar/app-icon substitution",
         "checks": checks,
     }
 
@@ -196,7 +323,7 @@ def main():
             if len(paths) != 1:
                 raise ValueError(f"Expected one original {stage} native metadata capture; found {len(paths)}")
             results.append(analyze(paths[0], stage))
-        except (OSError, ValueError, KeyError, TypeError, zlib.error, struct.error) as error:
+        except (OSError, ValueError, KeyError, TypeError, ET.ParseError, zlib.error, struct.error) as error:
             errors.append({"stage": stage, "error": str(error)})
     if len({result["api_level"] for result in results}) > 1:
         errors.append({"scope": "captures", "error": "Device API level changed between theme captures"})

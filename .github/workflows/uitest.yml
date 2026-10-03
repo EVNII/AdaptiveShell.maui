@@ -171,20 +171,29 @@ jobs:
           WDA_TESTING_INTEROP="$WDA_DEVELOPER_PATH/Platforms/iPhoneSimulator.platform/Developer/usr/lib/lib_TestingInterop.dylib"
           printf 'AUT build SDK: ' > TestResults/pr-wda-toolchain.txt
           /usr/libexec/PlistBuddy -c 'Print DTSDKName' Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app/Info.plist >> TestResults/pr-wda-toolchain.txt
-          printf 'WDA developer path: %s\nRequired testing library: %s\n' "$WDA_DEVELOPER_PATH" "$WDA_TESTING_INTEROP" >> TestResults/pr-wda-toolchain.txt
-          if [ ! -f "$WDA_TESTING_INTEROP" ] || [ ! -r "$WDA_TESTING_INTEROP" ]; then
-            echo 'Required library is missing; refuse to start WDA with an incomplete toolchain.' >> TestResults/pr-wda-toolchain.txt
-            cat TestResults/pr-wda-toolchain.txt
-            exit 1
+          printf 'WDA developer path: %s\nOptional Swift Testing interop path: %s\n' "$WDA_DEVELOPER_PATH" "$WDA_TESTING_INTEROP" >> TestResults/pr-wda-toolchain.txt
+          # WDA 16.12.11 explicitly excludes this dependency for Xcode 16.
+          if [ -f "$WDA_TESTING_INTEROP" ] && [ -r "$WDA_TESTING_INTEROP" ]; then
+            echo 'Optional Swift Testing interop: present' >> TestResults/pr-wda-toolchain.txt
+            shasum -a 256 "$WDA_TESTING_INTEROP" >> TestResults/pr-wda-toolchain.txt
+          else
+            echo 'Optional Swift Testing interop: absent or unreadable (not required by Xcode 16)' >> TestResults/pr-wda-toolchain.txt
           fi
-          shasum -a 256 "$WDA_TESTING_INTEROP" >> TestResults/pr-wda-toolchain.txt
           sudo xcode-select -s "$WDA_DEVELOPER_PATH"
           [ "$(xcode-select -p)" = "$WDA_DEVELOPER_PATH" ]
           WDA_XCODE_VERSION="$(xcodebuild -version)"
           printf '%s\n' "$WDA_XCODE_VERSION" >> TestResults/pr-wda-toolchain.txt
           [ "$(printf '%s\n' "$WDA_XCODE_VERSION" | head -n 1)" = 'Xcode 16.4' ]
-          printf 'WDA simulator SDK: ' >> TestResults/pr-wda-toolchain.txt
-          xcrun --sdk iphonesimulator --show-sdk-version >> TestResults/pr-wda-toolchain.txt
+          WDA_SIMULATOR_SDK_VERSION="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          WDA_SIMULATOR_SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          WDA_XCTEST_FRAMEWORK="$WDA_DEVELOPER_PATH/Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks/XCTest.framework"
+          printf 'WDA simulator SDK: %s\nWDA simulator SDK path: %s\nWDA XCTest framework: %s\n' "$WDA_SIMULATOR_SDK_VERSION" "$WDA_SIMULATOR_SDK_PATH" "$WDA_XCTEST_FRAMEWORK" >> TestResults/pr-wda-toolchain.txt
+          if [[ ! "$WDA_SIMULATOR_SDK_VERSION" =~ ^[0-9]+([.][0-9]+)+$ ]] || [ ! -d "$WDA_SIMULATOR_SDK_PATH" ] || [[ "$WDA_SIMULATOR_SDK_PATH" != "$WDA_DEVELOPER_PATH/Platforms/iPhoneSimulator.platform/Developer/SDKs/"* ]] || [ ! -d "$WDA_XCTEST_FRAMEWORK" ] || [ ! -r "$WDA_XCTEST_FRAMEWORK/XCTest" ]; then
+            echo 'The selected toolchain must expose its genuine simulator SDK and XCTest framework; native UI suite remains pending.' >> TestResults/pr-wda-toolchain.txt
+            cat TestResults/pr-wda-toolchain.txt
+            exit 1
+          fi
+          shasum -a 256 "$WDA_XCTEST_FRAMEWORK/XCTest" >> TestResults/pr-wda-toolchain.txt
           echo "DEVELOPER_DIR=$WDA_DEVELOPER_PATH" >> "$GITHUB_ENV"
           xcrun simctl list devices available -j | python3 -c '
           import json, os, sys

@@ -173,17 +173,26 @@ namespace AdaptiveShell.Platforms.Android
         bool? _previousLightStatusBars;
         bool _lastLightStatusBars;
 
+        global::Android.Views.Window? _navigationAppearanceWindow;
+        bool? _previousLightNavigationBars;
+        bool _lastLightNavigationBars;
+        bool? _previousNavigationBarContrastEnforced;
+
         private void OnRootAttachedToWindow(object? sender,
             global::Android.Views.View.ViewAttachedToWindowEventArgs e)
         {
             // WindowHandler initializes system bars before content is attached. Posting also
             // lets MAUI finish mapping the Page background used behind the top inset.
             _overlayLayout.Post(UpdateStatusBarAppearance);
+            _overlayLayout.Post(UpdateNavigationBarAppearance);
         }
 
         private void OnRootDetachedFromWindow(object? sender,
-            global::Android.Views.View.ViewDetachedFromWindowEventArgs e) =>
+            global::Android.Views.View.ViewDetachedFromWindowEventArgs e)
+        {
             RestoreStatusBarAppearance();
+            RestoreNavigationBarAppearance();
+        }
 
         private void OnRootBackgroundChanged(object? sender, PropertyChangedEventArgs e)
         {
@@ -191,6 +200,7 @@ namespace AdaptiveShell.Platforms.Android
                 || e.PropertyName == nameof(AShell.Background))
             {
                 _overlayLayout.Post(UpdateStatusBarAppearance);
+                _overlayLayout.Post(UpdateNavigationBarAppearance);
             }
         }
 
@@ -255,6 +265,172 @@ namespace AdaptiveShell.Platforms.Android
                 }
             }
             _previousLightStatusBars = null;
+        }
+
+        private void UpdateNavigationBarAppearance()
+        {
+            if (_disposed || !_overlayLayout.IsAttachedToWindow
+                || !OperatingSystem.IsAndroidVersionAtLeast(26)
+                || _activity?.Window is not { } window)
+            {
+                return;
+            }
+
+            if (_navigationAppearanceWindow is not null
+                && !ReferenceEquals(_navigationAppearanceWindow, window))
+            {
+                // Ownership cannot transfer to a different host window.
+                RestoreNavigationBarAppearance();
+            }
+
+            int targetSdk = (int)(_context.ApplicationInfo?.TargetSdkVersion ?? 0);
+            bool edgeToEdge = OperatingSystem.IsAndroidVersionAtLeast(36) && targetSdk >= 36;
+#pragma warning disable CA1422 // The actual Android 15 theme may still opt out.
+            if (!edgeToEdge && OperatingSystem.IsAndroidVersionAtLeast(35) && targetSdk >= 35)
+            {
+                using var style = _activity.ObtainStyledAttributes(
+                    new[] { global::Android.Resource.Attribute.WindowOptOutEdgeToEdgeEnforcement });
+                edgeToEdge = !style.GetBoolean(0, false);
+            }
+            int legacyColor = window.NavigationBarColor;
+#pragma warning restore CA1422
+            int color;
+            bool transparent = edgeToEdge || ((uint)legacyColor >> 24) == 0;
+            if (transparent)
+            {
+                // In enforced edge-to-edge, getNavigationBarColor returns zero even
+                // while DecorView keeps a colored scrim internally. Do not save/restore
+                // that getter as the scrim's color. Own the readable contrast switch
+                // instead, and only when an opaque Shell surface covers the real inset.
+                if (!TryGetNavigationInsetColor(window, out color))
+                {
+                    RestoreNavigationBarAppearance();
+                    return;
+                }
+            }
+            else if (((uint)legacyColor >> 24) == 255)
+            {
+                // Legacy opaque host colors remain the actual button background.
+                color = legacyColor;
+            }
+            else
+            {
+                RestoreNavigationBarAppearance();
+                return;
+            }
+
+            var controller = WindowCompat.GetInsetsController(window, window.DecorView);
+            if (controller is null)
+            {
+                return;
+            }
+            if (transparent && OperatingSystem.IsAndroidVersionAtLeast(29)
+                && window.NavigationBarContrastEnforced)
+            {
+                _navigationAppearanceWindow ??= window;
+                _previousNavigationBarContrastEnforced ??= window.NavigationBarContrastEnforced;
+                window.NavigationBarContrastEnforced = false;
+            }
+            bool lightBackground = ColorUtils.CalculateLuminance(color) > 0.5;
+            if (_previousLightNavigationBars is not null
+                || controller.AppearanceLightNavigationBars != lightBackground)
+            {
+                _navigationAppearanceWindow ??= window;
+                _previousLightNavigationBars ??= controller.AppearanceLightNavigationBars;
+                if (controller.AppearanceLightNavigationBars != lightBackground)
+                {
+                    controller.AppearanceLightNavigationBars = lightBackground;
+                }
+                _lastLightNavigationBars = lightBackground;
+            }
+        }
+
+        private bool TryGetNavigationInsetColor(global::Android.Views.Window window, out int color)
+        {
+            color = 0;
+            var insets = ViewCompat.GetRootWindowInsets(window.DecorView);
+            if (insets is null || !insets.IsVisible(WindowInsetsCompat.Type.NavigationBars()))
+            {
+                return false;
+            }
+            var navigation = insets.GetInsets(WindowInsetsCompat.Type.NavigationBars());
+            if (navigation.Bottom <= 0 || navigation.Left != 0 || navigation.Right != 0)
+            {
+                return false;
+            }
+
+            global::Android.Views.View provider = _isBottomBar ? _navigationView : _overlayLayout;
+            if (provider.Visibility != ViewStates.Visible || provider.Alpha != 1f
+                || _overlayLayout.Alpha != 1f || _linearLayout.Alpha != 1f
+                || _drawerPanel.Visibility == ViewStates.Visible
+                || _drawerScrim.Visibility == ViewStates.Visible)
+            {
+                return false;
+            }
+            var decorLocation = new int[2];
+            var providerLocation = new int[2];
+            window.DecorView.GetLocationOnScreen(decorLocation);
+            provider.GetLocationOnScreen(providerLocation);
+            int left = decorLocation[0];
+            int right = left + window.DecorView.Width;
+            int bottom = decorLocation[1] + window.DecorView.Height;
+            int top = bottom - navigation.Bottom;
+            if (window.DecorView.Width <= 0 || top < decorLocation[1]
+                || providerLocation[0] > left || providerLocation[1] > top
+                || providerLocation[0] + provider.Width < right
+                || providerLocation[1] + provider.Height < bottom)
+            {
+                return false;
+            }
+
+            if (_isBottomBar
+                && _navigationView.Background is global::Google.Android.Material.Shape.MaterialShapeDrawable shape
+                && shape.Alpha == 255 && shape.FillColor is { } fill
+                && _navigationView.BackgroundTintList is { } tint)
+            {
+                int fillColor = fill.GetColorForState(_navigationView.GetDrawableState(),
+                    new global::Android.Graphics.Color(fill.DefaultColor));
+                if (((uint)fillColor >> 24) != 255)
+                {
+                    return false;
+                }
+                color = tint.GetColorForState(_navigationView.GetDrawableState(),
+                    new global::Android.Graphics.Color(tint.DefaultColor));
+            }
+            else if (!_isBottomBar
+                && _overlayLayout.Background is global::Android.Graphics.Drawables.ColorDrawable background)
+            {
+                color = background.Color.ToArgb();
+            }
+            else
+            {
+                return false;
+            }
+            return ((uint)color >> 24) == 255;
+        }
+
+        private void RestoreNavigationBarAppearance()
+        {
+            if (_navigationAppearanceWindow is { } window
+                && ReferenceEquals(_activity?.Window, window))
+            {
+                var controller = WindowCompat.GetInsetsController(window, window.DecorView);
+                if (_previousLightNavigationBars is bool light
+                    && controller is not null
+                    && controller.AppearanceLightNavigationBars == _lastLightNavigationBars)
+                {
+                    controller.AppearanceLightNavigationBars = light;
+                }
+                if (_previousNavigationBarContrastEnforced is bool contrast
+                    && OperatingSystem.IsAndroidVersionAtLeast(29)
+                    && !window.NavigationBarContrastEnforced)
+                {
+                    window.NavigationBarContrastEnforced = contrast;
+                }
+            }
+            _navigationAppearanceWindow = null;
+            _previousLightNavigationBars = null;
+            _previousNavigationBarContrastEnforced = null;
         }
 
         private static AndroidX.Activity.ComponentActivity? FindActivity(Context context)
@@ -443,6 +619,7 @@ namespace AdaptiveShell.Platforms.Android
 
                 // 抽屉浮层:面板背景全高,内容避让状态栏与手势区
                 _owner._drawerPanel.SetPadding(0, top, 0, bottom);
+                _owner._overlayLayout.Post(_owner.UpdateNavigationBarAppearance);
 
                 return insets;
             }
@@ -450,6 +627,7 @@ namespace AdaptiveShell.Platforms.Android
 
         private void OnRootLayoutChange(object? sender, global::Android.Views.View.LayoutChangeEventArgs e)
         {
+            _overlayLayout.Post(UpdateNavigationBarAppearance);
             var widthDp = (int)((e.Right - e.Left) / _density);
             var useBottomBar = widthDp < CompactWidthBreakpointDp;
             if (useBottomBar != _isBottomBar)
@@ -940,6 +1118,7 @@ namespace AdaptiveShell.Platforms.Android
             _overlayLayout.ViewAttachedToWindow -= OnRootAttachedToWindow;
             _overlayLayout.ViewDetachedFromWindow -= OnRootDetachedFromWindow;
             RestoreStatusBarAppearance();
+            RestoreNavigationBarAppearance();
             if (_configListener is not null)
             {
                 _activity?.RemoveOnConfigurationChangedListener(_configListener);
@@ -1093,6 +1272,7 @@ namespace AdaptiveShell.Platforms.Android
                     ResolveThemeColor(_context, (onSurface & 0x00ffffff) | 0x1f000000,
                         "colorControlHighlight")));
             UpdateStatusBarAppearance();
+            UpdateNavigationBarAppearance();
         }
 
         private int ResolveOnSurfaceColor() =>

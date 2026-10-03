@@ -91,7 +91,7 @@ Configuration via environment variables: `UITEST_PLATFORM`, `UITEST_FORM` (`comp
 `DarkModeTests` additionally switches the system appearance (adb `uimode`, `simctl ui appearance`, Windows registry theme) and verifies the shell stays functional in dark mode; screenshots from both themes land in the report.
 Android also reads back native night mode; the locked API29 CI image uses an explicitly enabled privileged emulator shell for the same system service command.
 
-Android theme tests also require Python 3 to verify status-bar foreground contrast from three original screenshots and native `mobile:getSystemBars` frames. Missing evidence or invisible status-bar foreground fails the theme test.
+Android theme tests also require Python 3 to verify status-bar foreground and each system navigation key from three original screenshots, native `mobile:getSystemBars` frames, and stable SystemUI/Launcher accessibility bounds. The capture temporarily enables all native windows and restores the original setting. Missing evidence or insufficient foreground contrast fails the theme test and report.
 
 `LandingPageDarkModeTests` keeps the group landing page open through light, dark, and restored light appearance. On Android compact and iOS compact/Duo it checks the page background, both SVG icons and titles from original screenshots and native accessibility bounds, then opens both children, clicks their counters, and returns using the native Back affordance. It also verifies both child backgrounds and the returned landing page backgrounds, icons, and titles from the dark captures. Python 3 is required; missing captures or invisible icons fail the test and report. Sidebar, drawer, and direct-leaf layouts have no dedicated landing page and explicitly skip this test.
 

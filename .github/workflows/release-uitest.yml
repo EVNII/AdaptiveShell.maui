@@ -471,6 +471,7 @@ jobs:
             TestResults/landing-*.xml
             TestResults/landing-*.json
             TestResults/android-*.json
+            TestResults/android-*.xml
             appium.log
           if-no-files-found: ignore
 

@@ -210,6 +210,21 @@ public class DarkModeTests : BaseTest
         Driver.WaitForAccessibilityId("Collapse navigation rail");
     }
 
+    OpenQA.Selenium.Appium.Android.Interfaces.IHasSettings AndroidWindowSettings =>
+        Driver as OpenQA.Selenium.Appium.Android.Interfaces.IHasSettings
+        ?? throw new InvalidOperationException("Android driver does not expose its native settings API.");
+
+    bool ReadMultiWindowSetting()
+    {
+        using var settings = JsonDocument.Parse(JsonSerializer.Serialize(AndroidWindowSettings.Settings));
+        if (!settings.RootElement.TryGetProperty("enableMultiWindows", out var value)
+            || value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            Assert.Fail("The driver did not return an actual boolean enableMultiWindows setting.");
+        }
+        return value.GetBoolean();
+    }
+
     void CaptureThemeStage(string stage, int sequence, string ordinaryLabel)
     {
         if (AppiumSetup.Platform == "android")
@@ -218,13 +233,36 @@ public class DarkModeTests : BaseTest
             Directory.CreateDirectory(androidResults);
             // mobile:getSystemBars returns native dumpsys window frames, not the
             // older /system_bars response containing only a status-bar height.
-            var systemBarsBefore = Driver.ExecuteScript("mobile: getSystemBars");
-            var deviceInfo = Driver.ExecuteScript("mobile: deviceInfo");
-            var screenSize = Driver.Manage().Window.Size;
-            Shot(ordinaryLabel);
-            // Required capture: an ordinary Shot can swallow screenshot failures.
-            Shots.Save(Driver, $"theme-{stage}", sequence);
-            var systemBarsAfter = Driver.ExecuteScript("mobile: getSystemBars");
+            var enabledBefore = ReadMultiWindowSetting();
+            bool enabledDuringBefore = false, enabledDuringAfter = false, enabledRestored = false;
+            object systemBarsBefore = null!, systemBarsAfter = null!, deviceInfo = null!;
+            System.Drawing.Size screenSize = default;
+            var sourceBefore = $"android-system-bars-{stage}-windows-before.xml";
+            var sourceAfter = $"android-system-bars-{stage}-windows-after.xml";
+            try
+            {
+                AndroidWindowSettings.SetSetting("enableMultiWindows", true);
+                enabledDuringBefore = ReadMultiWindowSetting();
+                Assert.That(enabledDuringBefore, Is.True, "Native system navigation capture requires all windows.");
+                systemBarsBefore = Driver.ExecuteScript("mobile: getSystemBars");
+                deviceInfo = Driver.ExecuteScript("mobile: deviceInfo");
+                screenSize = Driver.Manage().Window.Size;
+                File.WriteAllText(Path.Combine(androidResults, sourceBefore), Driver.PageSource);
+                Shot(ordinaryLabel);
+                // Required capture: an ordinary Shot can swallow screenshot failures.
+                Shots.Save(Driver, $"theme-{stage}", sequence);
+                File.WriteAllText(Path.Combine(androidResults, sourceAfter), Driver.PageSource);
+                systemBarsAfter = Driver.ExecuteScript("mobile: getSystemBars");
+                enabledDuringAfter = ReadMultiWindowSetting();
+                Assert.That(enabledDuringAfter, Is.True, "Native window setting changed during capture.");
+            }
+            finally
+            {
+                // Restore the exact captured setting before any subsequent app locator/action.
+                AndroidWindowSettings.SetSetting("enableMultiWindows", enabledBefore);
+                enabledRestored = ReadMultiWindowSetting();
+                Assert.That(enabledRestored, Is.EqualTo(enabledBefore), "Native window setting was not restored.");
+            }
             var androidEvidence = new
             {
                 schemaVersion = 1,
@@ -235,6 +273,12 @@ public class DarkModeTests : BaseTest
                 systemBarsAfter,
                 deviceInfo,
                 screenSize = new { width = screenSize.Width, height = screenSize.Height },
+                multiWindowCapture = new
+                {
+                    enabledBefore, enabledDuringBefore, enabledDuringAfter, enabledRestored,
+                    appPackage = AppiumSetup.BundleId,
+                    sourceBefore, sourceAfter,
+                },
             };
             File.WriteAllText(Path.Combine(androidResults, $"android-system-bars-{stage}.json"),
                 JsonSerializer.Serialize(androidEvidence, new JsonSerializerOptions { WriteIndented = true }));
@@ -343,7 +387,7 @@ public class DarkModeTests : BaseTest
             if (!string.IsNullOrWhiteSpace(error))
                 TestContext.Out.WriteLine(error);
             Assert.That(process.ExitCode, Is.EqualTo(0),
-                $"Android status-bar foreground must remain visible in all three themes. {error}");
+                $"Android status-bar foreground and each native system-navigation key must remain visible in all three themes. {error}");
         }
         catch (Exception ex) when (ex is not AssertionException)
         {

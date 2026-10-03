@@ -97,7 +97,7 @@ def cell_result(artifact_dir: Path, job_result: str | None = None) -> dict:
     report = platform_result(artifact_dir, job_result)
     if artifact_dir.name.startswith("shots-android-api"):
         raw_theme_result(artifact_dir, report, "android-system-bars-checks.json",
-                         "verify_android_system_bars.py", "visibility_status", "Android 状态栏")
+                         "verify_android_system_bars.py", "visibility_status", "Android 状态栏与系统导航键")
     if ((artifact_dir.name.startswith("shots-android-api") and artifact_dir.name.endswith("-compact"))
             or (artifact_dir.name.startswith("shots-ios") and "-compact-" in artifact_dir.name)
             or artifact_dir.name == DUO_ARTIFACT_NAME):
