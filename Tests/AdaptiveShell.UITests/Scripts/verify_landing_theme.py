@@ -13,9 +13,12 @@ The iOS screenInfo fields are serialized unchanged by WDA16.12.11 FBScreen.m:
 https://github.com/appium/WebDriverAgent/blob/v16.12.11/WebDriverAgentLib/Utilities/FBScreen.m#L25-L38
 Its pixel contract was observed on iOS18.6, iOS26.5, iOS27.0 and Duo27.1. Each runtime
 must independently prove the same native-screen/PNG/AX relationship from its
-own original captures. This does not test folding or identify icon art.
+own original captures. For actual iOS18 compact landing captures, the complete simctl internal PNG is
+selected by runtime and its immutable source/session provenance is also required.
+Other platform/runtime providers are unchanged. This does not test folding or identify icon art.
 """
 import argparse
+import importlib.util
 from collections import Counter
 import json
 import math
@@ -179,6 +182,27 @@ def ios_mapping(root, stage, source, png, metadata):
                                                - screen["bounds"][key]) for key in application}}
 
 
+
+def ios18_provider(root, sequence, label, identity, mapping, device_udid, stage, png):
+    if mapping.get("runtime_version", "").split(".")[0] != "18":
+        return None
+    if not isinstance(identity, dict) or identity.get("provider") != "simctl_internal":
+        raise ValueError("Actual iOS18 landing captures require complete native provider provenance")
+    if identity.get("actual_udid") != device_udid:
+        raise ValueError("Actual screenshot session UDID differs from the native landing session")
+    path = Path(__file__).with_name("capture_ios_landing_screenshot.py")
+    spec = importlib.util.spec_from_file_location("landing_original_native_provider", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    actual = module.verify_saved_capture(root, sequence, label, identity, png)
+    if actual["screen"] != mapping["screen"]:
+        raise ValueError("Screenshot provider and independently verified AX/PNG refer to different actual screens")
+    screens = read_json(unique(root, f"landing-{stage}-screens.json"))
+    if actual["wda_session_id"] != screens.get("sessionId"):
+        raise ValueError("Screenshot provider belongs to another actual WDA session")
+    return actual
+
+
 def rectangle(f, scale, png):
     left, top = math.floor(f["x"] * scale), math.floor(f["y"] * scale)
     right, bottom = math.ceil((f["x"] + f["width"]) * scale), math.ceil((f["y"] + f["height"]) * scale)
@@ -254,6 +278,10 @@ def analyze(root, stage, PNG):
         scale, mapping = 1, {"contract": "native Android AX/API screen pixels; PNG equals actual window size", "scale": 1}
     else:
         scale, mapping = ios_mapping(root, stage, source, png, data)
+    provider = None
+    if platform == "ios" and form == "compact":
+        provider = ios18_provider(root, STAGES[stage], f"landing-theme-{stage}",
+            data.get("screenshot_source"), mapping, data.get("device_udid"), stage, png)
     api = data["elements"]
     api_after = data["elements_after"]
     source_after = ET.parse(unique(root, f"landing-{stage}-after.xml")).getroot()
@@ -313,6 +341,7 @@ def analyze(root, stage, PNG):
             "device_udid": data.get("device_udid"), "png": str(png_path), "xml": str(xml_path),
             "png_size": [png.width, png.height], "mapping": mapping, "background": background,
             "native_frames": frames, "pixel_rectangles": rects, "geometry_stable_before_after": True,
+            "screenshot_source": data.get("screenshot_source"), "native_provider": provider,
             "checks": {"page_background": background, "rows": checks}, "rows": checks}
 
 
@@ -414,6 +443,12 @@ def verify_navigation(root, results, PNG):
         raise Mismatch("Dark navigation must visit Music and Photos exactly once")
     platform = results[0]["platform"]
     verified = {**data, "children": []}
+    if platform == "ios" and results[1]["form"] == "compact" and results[1]["mapping"].get("runtime_version", "").split(".")[0] == "18":
+        identity = results[1]["screenshot_source"]
+        keys = ("run_id", "run_attempt", "head_sha", "actual_udid", "appium_session_id", "actual_platform_version")
+        if any(any(result["screenshot_source"].get(key) != identity.get(key) for key in keys)
+               or result["native_provider"]["wda_session_id"] != results[1]["native_provider"]["wda_session_id"] for result in results):
+            raise ValueError("All original iOS18 phases must belong to the same source/run and native sessions")
     for entry in children:
         name = entry["child"]
         if entry.get("returned_to_landing") is not True:
@@ -425,18 +460,26 @@ def verify_navigation(root, results, PNG):
         sequence = 43 if name == "music" else 45
         child_png = PNG(unique(root, f"{sequence:02}-landing-dark-{name}-child-clicked.png"))
         child_scale, child = navigation_mapping(child, platform, results[1], child_png)
+        child_provider = None
+        if platform == "ios" and results[1]["form"] == "compact":
+            child_provider = ios18_provider(root, sequence, f"landing-dark-{name}-child-clicked",
+                results[1].get("screenshot_source"), results[1]["mapping"], results[1].get("device_udid"), "dark", child_png)
         counter = marker(child, "counterBtn", platform)
         if after not in [counter.get(key) for key in ("text", "label", "value")]:
             raise Mismatch(f"{name} child AX does not contain its recorded changed counter text")
         returned = ET.parse(unique(root, f"landing-dark-{name}-returned.xml")).getroot()
         return_png = PNG(unique(root, f"{sequence + 1:02}-landing-dark-{name}-returned.png"))
         return_scale, returned = navigation_mapping(returned, platform, results[1], return_png)
+        return_provider = None
+        if platform == "ios" and results[1]["form"] == "compact":
+            return_provider = ios18_provider(root, sequence + 1, f"landing-dark-{name}-returned",
+                results[1].get("screenshot_source"), results[1]["mapping"], results[1].get("device_udid"), "dark", return_png)
         for row in ROWS:
             marker(returned, row, platform)
         if any(matches_id(node, "counterBtn") and node.get("visible", node.get("displayed", "true")) == "true"
                for node in returned.iter()):
             raise Mismatch(f"Back from {name} did not return to the landing page")
-        verified["children"].append({**entry,
+        verified["children"].append({**entry, "child_screenshot_provider": child_provider, "returned_screenshot_provider": return_provider,
             "child_dark_appearance": child_background(child, platform, child_scale, child_png, counter),
             "returned_dark_appearance": returned_appearance(returned, platform, return_scale, return_png)})
     return verified

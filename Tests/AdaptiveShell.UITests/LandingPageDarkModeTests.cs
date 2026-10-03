@@ -139,11 +139,11 @@ public class LandingPageDarkModeTests : BaseTest
         }
         Assert.That(after, Is.Not.Null.And.Not.Empty.And.Not.EqualTo(before),
             $"The {child} child counter must respond to an actual click in dark mode.");
-        Shots.Save(Driver, $"landing-dark-{child}-child-clicked", sequence);
+        IosLandingScreenshotProvider.Save(Driver, $"landing-dark-{child}-child-clicked", sequence);
         SaveSource($"landing-dark-{child}-child.xml");
         FindChildBack().Click();
         WaitForLanding();
-        Shots.Save(Driver, $"landing-dark-{child}-returned", sequence + 1);
+        IosLandingScreenshotProvider.Save(Driver, $"landing-dark-{child}-returned", sequence + 1);
         SaveSource($"landing-dark-{child}-returned.xml");
         return new { child, counter_before = before, counter_after = after, returned_to_landing = true };
     }
@@ -159,7 +159,7 @@ public class LandingPageDarkModeTests : BaseTest
         SaveSource($"landing-{stage}.xml");
         if (AppiumSetup.Platform == "ios")
             CaptureIosScreens(stage, "");
-        Shots.Save(Driver, $"landing-theme-{stage}", sequence);
+        var captureSource = IosLandingScreenshotProvider.Save(Driver, $"landing-theme-{stage}", sequence);
         SaveSource($"landing-{stage}-after.xml");
         var elementsAfter = CaptureElements();
         var sizeAfter = Driver.Manage().Window.Size;
@@ -180,7 +180,7 @@ public class LandingPageDarkModeTests : BaseTest
                 ?? Driver.Capabilities.GetCapability("appium:platformVersion"))?.ToString(),
             window_size = new { width = size.Width, height = size.Height },
             window_size_after = new { width = sizeAfter.Width, height = sizeAfter.Height },
-            elements, elements_after = elementsAfter,
+            elements, elements_after = elementsAfter, screenshot_source = captureSource,
         }, JsonOptions));
     }
 
