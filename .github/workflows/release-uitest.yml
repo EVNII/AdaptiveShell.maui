@@ -1,4 +1,4 @@
-name: Duo Current13 Selection Diagnostic
+name: Duo Post Suite Snapshot Comparison
 
 on:
   workflow_dispatch:
@@ -152,11 +152,150 @@ jobs:
       - name: Install Appium
         timeout-minutes: 15
         run: |
-          npm i -g appium
-          appium driver install xcuitest
-          appium --version > TestResults/duo-appium-version.txt
-          appium driver list --installed --json > TestResults/duo-drivers.json
-          node -e 'const p=require("path"),f=require("fs"),o=require("os"); const a=process.env.APPIUM_HOME||p.join(o.homedir(),".appium"); const q=require.resolve("appium-webdriveragent/package.json",{paths:[p.join(a,"node_modules/appium-xcuitest-driver")]}); process.stdout.write(f.readFileSync(q,"utf8"));' > TestResults/duo-wda-version.json
+          python3 - <<'PY'
+          import hashlib, json, os, re, signal, subprocess, sys, time
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          out = Path('TestResults')
+          out.mkdir(exist_ok=True)
+          proof = {'schema': 1, 'status': 'error', 'scope': 'owned hosted Duo official npm toolchain only', 'ui_acceptance': False, 'commands': []}
+          started = time.monotonic()
+          def need(ok, message):
+              if not ok: raise ValueError(message)
+          def sha(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+          def run(args, label, seconds=30):
+              remaining = min(seconds, 750 - (time.monotonic() - started))
+              need(remaining > 0, 'Tool installation shared budget expired')
+              row = {'argv': args, 'label': label, 'timeout_seconds': remaining, 'status': 'started', 'started_utc': datetime.now(timezone.utc).isoformat()}
+              proof['commands'].append(row)
+              process = None
+              try:
+                  process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                  row['pid'] = process.pid
+                  try: group = os.getpgid(process.pid)
+                  except ProcessLookupError: group = None
+                  need(group == process.pid or (group is None and process.poll() is not None), 'Tool child is not an owned process group')
+                  stdout, stderr = process.communicate(timeout=remaining)
+                  row['exit_code'] = process.returncode
+                  (out / ('duo-toolchain-' + label + '.stdout')).write_bytes(stdout)
+                  (out / ('duo-toolchain-' + label + '.stderr')).write_bytes(stderr)
+                  row.update(stdout_sha256=hashlib.sha256(stdout).hexdigest(), stderr_sha256=hashlib.sha256(stderr).hexdigest())
+                  need(process.returncode == 0, 'Official npm/tool read failed: ' + label)
+                  row['status'] = 'completed'
+                  return stdout.decode('utf-8').strip()
+              except Exception as error:
+                  row.update(status='error', error=repr(error))
+                  if process is not None:
+                      try:
+                          if process.poll() is None and os.getpgid(process.pid) == process.pid:
+                              os.killpg(process.pid, signal.SIGKILL)
+                              row['owned_group_kill_requested'] = True
+                          stdout, stderr = process.communicate(timeout=2)
+                          (out / ('duo-toolchain-' + label + '.stdout')).write_bytes(stdout)
+                          (out / ('duo-toolchain-' + label + '.stderr')).write_bytes(stderr)
+                          row.update(stdout_sha256=hashlib.sha256(stdout).hexdigest(), stderr_sha256=hashlib.sha256(stderr).hexdigest())
+                      except Exception as cleanup: row['cleanup_error'] = repr(cleanup)
+                  raise
+              finally:
+                  row['finished_utc'] = datetime.now(timezone.utc).isoformat()
+          try:
+              need(sys.platform == 'darwin' and all(os.environ.get(k) == v for k, v in {
+                  'GITHUB_ACTIONS': 'true', 'RUNNER_OS': 'macOS', 'RUNNER_ENVIRONMENT': 'github-hosted',
+                  'GITHUB_REPOSITORY': 'EVNII/AdaptiveShell.maui', 'GITHUB_JOB': 'uitest-ios-27-1-duo',
+                  'GITHUB_REF_NAME': 'codex/duo-post-suite-snapshot-comparison', 'GITHUB_WORKFLOW': 'Duo Post Suite Snapshot Comparison'
+              }.items()), 'Exact hosted Duo CI scope rejected')
+              head = os.environ.get('GITHUB_SHA', '')
+              need(re.fullmatch('[0-9a-f]{40}', head) and os.environ.get('GITHUB_WORKFLOW_SHA') == head, 'Workflow/source identity differs')
+              workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+              need(Path.cwd().resolve() == workspace and run(['git', 'rev-parse', 'HEAD'], 'head') == head, 'Checkout/source differs')
+              need(os.environ['GITHUB_WORKFLOW_REF'].split('@')[0] == 'EVNII/AdaptiveShell.maui/.github/workflows/release-uitest.yml', 'Wrong workflow path')
+              temporary = Path(os.environ['RUNNER_TEMP']).resolve()
+              home = temporary / 'duo-official-appium-home'
+              need(temporary.is_dir() and not home.exists() and not home.is_symlink(), 'Owned Appium home already exists')
+              home.mkdir()
+              os.environ['APPIUM_HOME'] = str(home)
+              os.environ['npm_config_registry'] = 'https://registry.npmjs.org/'
+              with open(os.environ['GITHUB_ENV'], 'a') as stream: stream.write('APPIUM_HOME=' + str(home) + '\n')
+              proof.update(repository=os.environ['GITHUB_REPOSITORY'], head_sha=head,
+                  workflow_sha256=sha(workspace / '.github/workflows/release-uitest.yml'),
+                  run_id=os.environ['GITHUB_RUN_ID'], run_attempt=os.environ['GITHUB_RUN_ATTEMPT'], appium_home=str(home))
+              expected = {'appium': '3.8.0', 'appium-xcuitest-driver': '12.13.3', 'appium-webdriveragent': '16.12.11'}
+              dists = {}
+              for package, version in expected.items():
+                  dist = json.loads(run(['npm', 'view', package + '@' + version, 'dist', '--json', '--registry=https://registry.npmjs.org/'], 'dist-' + package))
+                  need(urlparse(dist['tarball']).scheme == 'https' and urlparse(dist['tarball']).netloc == 'registry.npmjs.org'
+                       and isinstance(dist.get('integrity'), str) and dist['integrity'].startswith('sha512-'), 'Non-official npm distribution')
+                  dists[package] = dist
+              proof['official_npm_distributions'] = dists
+              run(['npm', 'install', '-g', 'appium@3.8.0', '--registry=https://registry.npmjs.org/', '--no-audit', '--no-fund'], 'install-appium', 180)
+              run(['appium', 'driver', 'install', 'xcuitest@12.13.3'], 'install-xcuitest', 180)
+              manifest = home / 'package.json'
+              need(manifest.is_file() and not manifest.is_symlink(), 'Appium-owned npm root manifest is missing')
+              before = json.loads(manifest.read_text())
+              proof['appium_home_manifest_before'] = before
+              resolver = "const fs=require('fs'),p=require('path');const a=process.env.APPIUM_HOME;const d=require.resolve('appium-xcuitest-driver/package.json',{paths:[a]});const w=require.resolve('appium-webdriveragent/package.json',{paths:[p.dirname(d)]});console.log(JSON.stringify({driver:{path:fs.realpathSync(d),package:JSON.parse(fs.readFileSync(d))},wda:{path:fs.realpathSync(w),package:JSON.parse(fs.readFileSync(w))}}));"
+              resolved = json.loads(run(['node', '-e', resolver], 'resolved-before'))
+              for item, package in [('driver', 'appium-xcuitest-driver'), ('wda', 'appium-webdriveragent')]:
+                  need(Path(resolved[item]['path']).is_relative_to(home) and resolved[item]['package']['name'] == package, 'Resolution escaped owned Appium home')
+              need(resolved['driver']['package']['version'] == '12.13.3', 'Exact driver installation mismatch')
+              proof['override_applied'] = resolved['wda']['package']['version'] != '16.12.11'
+              if proof['override_applied']:
+                  run(['npm', 'pkg', 'set', 'overrides.appium-webdriveragent=16.12.11', '--prefix', str(home)], 'pin-wda-override')
+                  after = json.loads(manifest.read_text()); wanted = dict(before); overrides = dict(before.get('overrides', {})); overrides['appium-webdriveragent'] = '16.12.11'; wanted['overrides'] = overrides
+                  need(after == wanted, 'Override changed unrelated root manifest fields')
+                  run(['npm', 'install', '--prefix', str(home), '--ignore-scripts', '--package-lock=true', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org/'], 'reify-owned-wda', 180)
+              resolved = json.loads(run(['node', '-e', resolver], 'resolved-after'))
+              proof['installed_resolution'] = resolved
+              for item, package in [('driver', 'appium-xcuitest-driver'), ('wda', 'appium-webdriveragent')]:
+                  path = Path(resolved[item]['path']); data = resolved[item]['package']
+                  need(path.is_relative_to(home) and data['name'] == package and data['version'] == expected[package], 'Installed official package/version differs')
+                  resolved[item]['package_json_sha256'] = sha(path)
+              proof['appium_home_manifest_after'] = json.loads(manifest.read_text())
+              lock_path = home / 'package-lock.json'
+              # Appium's official CLI uses --no-package-lock on a fresh standalone home.
+              # Reification after an override explicitly enables the npm lock.
+              if proof['override_applied']:
+                  lock = json.loads(lock_path.read_text())
+                  for item, package in [('driver', 'appium-xcuitest-driver'), ('wda', 'appium-webdriveragent')]:
+                      key = str(Path(resolved[item]['path']).parent.relative_to(home))
+                      entry = lock['packages'][key]
+                      need(entry['version'] == expected[package] and entry.get('resolved') == dists[package]['tarball']
+                           and entry.get('integrity') == dists[package]['integrity'], 'Installed package lock is not exact official npm distribution')
+                  proof['package_lock_sha256'] = sha(lock_path)
+              else:
+                  proof['package_lock_sha256'] = sha(lock_path) if lock_path.is_file() else None
+                  proof['no_reification_reason'] = 'Official CLI already installed the exact resolved WDA version'
+              need(run(['appium', '--version'], 'appium-version') == '3.8.0', 'Appium CLI version differs')
+              global_info = json.loads(run(['npm', 'list', '-g', 'appium', '--depth=0', '--json'], 'global-appium'))
+              need(global_info['dependencies']['appium']['version'] == '3.8.0', 'Global Appium package differs')
+              global_root = run(['npm', 'root', '-g'], 'global-root')
+              appium_resolver = "const fs=require('fs'),p=require('path');const q=require.resolve('appium/package.json',{paths:[process.argv[1]]});console.log(JSON.stringify({path:fs.realpathSync(q),package:JSON.parse(fs.readFileSync(q))}));"
+              installed_appium = json.loads(run(['node', '-e', appium_resolver, str(Path(global_root).parent)], 'resolved-appium'))
+              appium_path = Path(installed_appium['path'])
+              need(appium_path.is_relative_to(Path(global_root).resolve()) and installed_appium['package']['name'] == 'appium'
+                   and installed_appium['package']['version'] == '3.8.0', 'Global Appium resolution differs')
+              installed_appium['package_json_sha256'] = sha(appium_path)
+              proof['installed_appium'] = installed_appium
+              drivers = run(['appium', 'driver', 'list', '--installed', '--json'], 'drivers')
+              receipt = json.loads(drivers)['xcuitest']
+              need(receipt['pkgName'] == 'appium-xcuitest-driver' and receipt['version'] == '12.13.3'
+                   and receipt['installType'] == 'npm' and Path(receipt['installPath']).resolve() == Path(resolved['driver']['path']).parent,
+                   'Appium driver receipt is not the exact owned official npm installation')
+              (out / 'duo-appium-version.txt').write_text('3.8.0\n')
+              (out / 'duo-drivers.json').write_text(drivers + '\n')
+              (out / 'duo-wda-version.json').write_text(json.dumps(resolved['wda']['package'], indent=2) + '\n')
+              xcode = run(['xcodebuild', '-version'], 'xcode-version')
+              need(re.search(r'^Xcode 27\.1(?:\s|$)', xcode) and run(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], 'sdk-version') == '27.1', 'Actual native toolchain differs')
+              proof.update(status='verified', xcode_version=xcode, native_sdk='27.1')
+          except Exception as error:
+              proof['error'] = repr(error)
+          finally:
+              proof['elapsed_seconds'] = time.monotonic() - started
+              (out / 'duo-official-toolchain.json').write_text(json.dumps(proof, indent=2) + '\n')
+          if proof['status'] != 'verified': raise SystemExit(1)
+          PY
       # Requires the Duo opt-in C# hook: usePrebuiltWDA and the exact exported path.
       - name: Build installed WDA16.12.11 for exact Shutdown Duo before boot
         timeout-minutes: 15
@@ -188,6 +327,7 @@ jobs:
           UITEST_APP_PATH: ${{ github.workspace }}/Example/ExampleAShellApp/bin/Debug/net10.0-ios26.5/iossimulator-arm64/ExampleAShellApp.app
           DUO_DIAGNOSTIC_PREBOOT_HOST: 'true'
           DUO_DIAGNOSTIC_PREINSTALL_AUT: 'true'
+          UITEST_DUO_POST_SUITE_SNAPSHOT: 'true'
           UITEST_DUO_VISIBILITY_DIAGNOSTIC: 'true'
         run: python3 .github/workflows/scripts/duo-split-build-run.py
       - name: Collect opted-in native visibility log after original tests

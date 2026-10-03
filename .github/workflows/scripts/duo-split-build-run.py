@@ -987,8 +987,8 @@ def require_selection_diagnostic_identity():
             or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
             or os.environ.get("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
             or os.environ.get("GITHUB_JOB") != "uitest-ios-27-1-duo"
-            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-current13-selection-diagnostic"
-            or os.environ.get("GITHUB_WORKFLOW") != "Duo Current13 Selection Diagnostic"
+            or os.environ.get("GITHUB_REF_NAME") != "codex/duo-post-suite-snapshot-comparison"
+            or os.environ.get("GITHUB_WORKFLOW") != "Duo Post Suite Snapshot Comparison"
             or os.environ.get("GITHUB_WORKFLOW_SHA") != os.environ.get("GITHUB_SHA")
             or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))):
         raise ValueError("This helper is restricted to the exact current13 selection diagnostic workflow")

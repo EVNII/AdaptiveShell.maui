@@ -50,8 +50,8 @@ internal static class DuoVisibilityDiagnostics
                 || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true"
                 || Environment.GetEnvironmentVariable("GITHUB_JOB") != "uitest-ios-27-1-duo"
                 || Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
-                || Environment.GetEnvironmentVariable("GITHUB_REF_NAME") != "codex/duo-current13-selection-diagnostic"
-                || Environment.GetEnvironmentVariable("GITHUB_WORKFLOW") != "Duo Current13 Selection Diagnostic"
+                || Environment.GetEnvironmentVariable("GITHUB_REF_NAME") != "codex/duo-post-suite-snapshot-comparison"
+                || Environment.GetEnvironmentVariable("GITHUB_WORKFLOW") != "Duo Post Suite Snapshot Comparison"
                 || Environment.GetEnvironmentVariable("GITHUB_WORKFLOW_SHA") != head
                 || AppiumSetup.Platform != "ios" || AppiumSetup.Form != "duo" || AppiumSetup.BundleId != Bundle
                 || !Guid.TryParseExact(udid, "D", out _)
@@ -239,7 +239,7 @@ internal static class DuoVisibilityDiagnostics
     }
     // This validates raw diagnostic provenance only. It never accepts a UIKit
     // native state as proof that the original Appium/WDA Displayed check passed.
-    static void ValidateNativeRecords(byte[] bytes, string head)
+    internal static void ValidateNativeRecords(byte[] bytes, string head)
     {
         static void Require(bool valid, string message)
         {

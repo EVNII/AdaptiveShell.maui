@@ -64,8 +64,8 @@ public class SessionHost
             || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true"
             || Environment.GetEnvironmentVariable("GITHUB_JOB") != "uitest-ios-27-1-duo"
             || Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
-            || Environment.GetEnvironmentVariable("GITHUB_REF_NAME") != "codex/duo-current13-selection-diagnostic"
-            || Environment.GetEnvironmentVariable("GITHUB_WORKFLOW") != "Duo Current13 Selection Diagnostic")
+            || Environment.GetEnvironmentVariable("GITHUB_REF_NAME") != "codex/duo-post-suite-snapshot-comparison"
+            || Environment.GetEnvironmentVariable("GITHUB_WORKFLOW") != "Duo Post Suite Snapshot Comparison")
             throw new InvalidOperationException("The preboot TestHost barrier requires explicit Duo CI opt-in.");
 
         static string Required(string key) => Environment.GetEnvironmentVariable(key)
@@ -151,7 +151,23 @@ public class SessionHost
     [OneTimeTearDown]
     public void CloseSession()
     {
-        Driver?.Quit();
-        Driver = null!;
+        if (Environment.GetEnvironmentVariable("UITEST_DUO_POST_SUITE_SNAPSHOT") is null)
+        {
+            Driver?.Quit();
+            Driver = null!;
+            return;
+        }
+        try { DuoPostSuiteSnapshotComparison.Capture(Driver); }
+        catch (Exception error)
+        {
+            // A side collector failure must not replace any original NUnit outcome.
+            try { TestContext.Progress.WriteLine("Post-suite snapshot side evidence failed: " + error.Message); }
+            catch { }
+        }
+        finally
+        {
+            Driver?.Quit();
+            Driver = null!;
+        }
     }
 }
