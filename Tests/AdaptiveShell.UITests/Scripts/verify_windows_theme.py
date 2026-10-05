@@ -17,9 +17,9 @@ Icon sampling deliberately supports the example's compact NavigationView only:
 each menu item must be a near-square button, not a wide text-bearing row. The
 central 60% x 64% excludes the left selection indicator and outer borders. This
 proves contrasting pixels within the icon area; it does not identify the glyph.
-Page-background sampling uses the blank content band below the counter button,
-within that button's horizontal span. Insufficient blank space is an evidence
-error rather than permission to guess another background region.
+Page-background sampling uses the middle of the measured gap between the counter
+button and screenshot bottom, within that button's horizontal span. Insufficient
+blank space is an evidence error rather than permission to guess another region.
 """
 
 import argparse
@@ -249,9 +249,14 @@ def analyze(json_path, xml_path, png_path, stage, metadata):
     button = elements["counterBtn"]
     if button["width"] < png.width * .30:
         raise ValueError("Counter button is too narrow to establish the example's content column")
+    button_bottom = button["y"] + button["height"]
+    blank_height = png.height - button_bottom
+    if blank_height <= 0:
+        raise ValueError("No captured content band remains below the counter button")
     page_band = (math.ceil(button["x"]),
-                 math.ceil(button["y"] + button["height"] * 1.25),
-                 math.floor(button["x"] + button["width"]), math.floor(png.height * .94))
+                 math.ceil(button_bottom + blank_height * .15),
+                 math.floor(button["x"] + button["width"]),
+                 math.floor(button_bottom + blank_height * .85))
     page = color_check(png, {"below_counter_content_band": page_band}, PHASES[stage][1],
                        minimum_pixels=max(1000, math.ceil(png.width * png.height * .02)))
     button_regions = {name: rectangle(button, left, .40, right, .60)
