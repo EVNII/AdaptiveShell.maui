@@ -265,6 +265,11 @@ jobs:
           $env:UITEST_APP_PATH = $exe.FullName
           dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
 
+      - name: Collect Windows application diagnostics
+        if: always()
+        shell: pwsh
+        run: ./.github/workflows/scripts/collect-windows-ui-diagnostics.ps1
+
       - name: Upload E2E evidence
         if: always()
         uses: actions/upload-artifact@v4

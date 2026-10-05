@@ -415,6 +415,10 @@ jobs:
           dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --logger "trx;LogFileName=e2e.trx" --results-directory TestResults
       - name: Verify rendered Windows theme and icons
         run: python Tests/AdaptiveShell.UITests/Scripts/verify_windows_theme.py TestResults --strict > TestResults/windows-theme.json
+      - name: Collect Windows application diagnostics
+        if: always()
+        shell: pwsh
+        run: ./.github/workflows/scripts/collect-windows-ui-diagnostics.ps1
       - name: Upload shots
         if: always()
         uses: actions/upload-artifact@v4

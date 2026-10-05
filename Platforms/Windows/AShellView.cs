@@ -236,7 +236,8 @@ namespace AdaptiveShell.Platforms.Windows
                     PlatformView.SelectedItem = menuItem;
                 }
             }
-            else if (PlatformView.SelectedItem is not null) PlatformView.SelectedItem = null;
+
+            // For a group child, keep WinUI's selection during ItemInvoked to avoid reentry.
 
             var page = ((IAShellContentController)current).page;
             if (!ReferenceEquals(_presentedContent, current) || !ReferenceEquals(_presentedPage, page))
