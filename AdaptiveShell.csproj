@@ -27,7 +27,8 @@
 
 		<!-- NuGet package metadata -->
 		<PackageId>AdaptiveShell.Maui</PackageId>
-		<Version>0.2.1</Version>
+		<Version>0.2.2</Version>
+		<PackageReleaseNotes>Fix dynamic navigation updates and page ownership, preserve group landing and repeated selection, clean up native lifecycles and default colors, and align AndroidX dependencies. Mac Catalyst requires version 18 or later.</PackageReleaseNotes>
 		<Authors>EVNII</Authors>
 		<Description>Adaptive shell navigation for .NET MAUI: sidebar, rail and bottom navigation that adapt to platform, window size and navigation groups.</Description>
 		<PackageTags>maui;navigation;shell;adaptive;sidebar</PackageTags>
@@ -44,7 +45,7 @@
 		<ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
 
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">18.0</SupportedOSPlatformVersion>
-		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">17.0</SupportedOSPlatformVersion>
+		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">18.0</SupportedOSPlatformVersion>
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">23.0</SupportedOSPlatformVersion>
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
 		<TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
@@ -71,6 +72,10 @@
 
 	<ItemGroup Condition="'$(TargetFramework)' == 'net10.0-android'">
 		<PackageReference Include="Xamarin.Google.Android.Material" Version="1.14.0.6" />
+		<!-- Align the older MAUI transitive KTX packages with Material's AndroidX versions. -->
+		<PackageReference Include="Xamarin.AndroidX.Fragment.Ktx" Version="1.8.9.3" />
+		<PackageReference Include="Xamarin.AndroidX.Lifecycle.LiveData" Version="2.11.0.1" />
+		<PackageReference Include="Xamarin.AndroidX.Lifecycle.Runtime.Ktx" Version="2.11.0.1" />
 	</ItemGroup>
 
 	<ItemGroup>

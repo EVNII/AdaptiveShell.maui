@@ -1,9 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace AdaptiveShell.Controls
+﻿namespace AdaptiveShell.Controls
 {
+    // Compatibility marker retained for existing consumers.
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public interface IAShellController
     {
     }

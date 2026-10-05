@@ -1,0 +1,20 @@
+name: Shared Control Tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit-controls:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Test shared controls
+        run: dotnet test Tests/AdaptiveShell.UnitTests/AdaptiveShell.UnitTests.csproj -c Release

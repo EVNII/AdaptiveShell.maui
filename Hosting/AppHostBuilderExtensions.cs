@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
-using System.Text;
-
-namespace AdaptiveShell.Hosting
+﻿namespace AdaptiveShell.Hosting
 {
     public static partial class AppHostBuilderExtensions
     {

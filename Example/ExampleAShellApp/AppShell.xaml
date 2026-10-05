@@ -12,7 +12,7 @@
         Title="Home"
         AutomationId="home"
         Icon="home.svg"
-        ContentTemplate="{DataTemplate local:MainPage}">
+        ContentTemplate="{DataTemplate local:HomePage}">
         <VisualStateManager.VisualStateGroups>
             <VisualStateGroup>
                 <VisualState x:Name="Small">
@@ -39,7 +39,7 @@
     Title="Home2"
     AutomationId="home2"
     Icon="favorite.svg"
-    ContentTemplate="{DataTemplate local:MainPage}"
+    ContentTemplate="{DataTemplate local:Home2Page}"
     />
 
     <a:AShellGroup Title="媒体" AutomationId="media" Icon="folder.svg">
@@ -47,13 +47,13 @@
             Title="音乐"
             AutomationId="music"
             Icon="star.svg"
-            ContentTemplate="{DataTemplate local:MainPage}"
+            ContentTemplate="{DataTemplate local:MusicPage}"
             />
         <a:AShellContent
             Title="相册"
             AutomationId="photos"
             Icon="star.svg"
-            ContentTemplate="{DataTemplate local:MainPage}"
+            ContentTemplate="{DataTemplate local:PhotosPage}"
             />
     </a:AShellGroup>
 </a:AShell>

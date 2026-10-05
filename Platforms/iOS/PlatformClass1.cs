@@ -1,6 +1,7 @@
 ﻿namespace AdaptiveShell
 {
-    // All the code in this file is only included on iOS.
+    // Compatibility placeholder from the original package template.
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public class PlatformClass1
     {
     }

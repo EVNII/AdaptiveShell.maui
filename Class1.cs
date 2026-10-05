@@ -1,6 +1,7 @@
 ﻿namespace AdaptiveShell
 {
-    // All the code in this file is included in all platforms.
+    // Compatibility placeholder from the original package template.
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public class Class1
     {
     }

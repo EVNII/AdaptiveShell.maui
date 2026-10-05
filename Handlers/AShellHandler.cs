@@ -1,8 +1,5 @@
 using AdaptiveShell.Controls;
 using Microsoft.Maui.Handlers;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace AdaptiveShell.Handlers
 {

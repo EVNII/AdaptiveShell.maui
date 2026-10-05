@@ -20,7 +20,7 @@ using ImageButton = Android.Widget.ImageButton;
 
 namespace AdaptiveShell.Platforms.Android
 {
-    public class AShellView : IDisposable
+    public partial class AShellView : IDisposable
     {
         // Material 3 window size class: 紧凑宽度(<600dp)使用底部导航栏,否则使用侧边 NavigationRail
         const int CompactWidthBreakpointDp = 600;
@@ -37,7 +37,7 @@ namespace AdaptiveShell.Platforms.Android
         FrameLayout _drawerPanel;
         global::Android.Views.View _drawerScrim;
         FrameLayout _contentFrameLayout;
-        NavigationBarView _navigationView;
+        NavigationBarView _navigationView = null!; // Created by RebuildNavigation in the constructor.
         FrameLayout? _navHeaderFrameLayout;
         ValueAnimator? _menuAnimator;
         bool _isBottomBar;
@@ -54,6 +54,16 @@ namespace AdaptiveShell.Platforms.Android
         Dictionary<AShellGroup, IMenuItem> _groupToMenuItemMap;
 
         Dictionary<AShellGroup, global::Android.Views.View> _groupToLandingViewMap;
+        readonly Dictionary<AShellGroup, Page> _groupToLandingPageMap = new();
+        readonly Dictionary<AShellGroup, (DataTemplate? Template, AShellContent[] Children,
+            string? GroupId, string?[] ChildIds)> _landingSnapshots = new();
+        readonly Dictionary<AShellContent, (Page Page, global::Android.Views.View View)> _contentPageViews = new();
+        AShellGroup? _displayedLandingGroup;
+        AShellContent? _landingCurrentItem;
+        AShellGroup? _drawerGroup;
+        bool _updatingNativeSelection;
+        int _menuIconGeneration;
+        int _drawerIconGeneration;
 
         public AShellView(AShell virtualView, Context context, IMauiContext mauiContext)
         {
@@ -133,9 +143,7 @@ namespace AdaptiveShell.Platforms.Android
             _overlayLayout.AddView(_linearLayout);
             _overlayLayout.AddView(_drawerScrim);
             _overlayLayout.AddView(_drawerPanel);
-            _overlayLayout.ViewAttachedToWindow += OnRootAttachedToWindow;
-            _overlayLayout.ViewDetachedFromWindow += OnRootDetachedFromWindow;
-            _virtualView.PropertyChanged += OnRootBackgroundChanged;
+            _windowAppearance = new AShellWindowAppearance(this);
 
             // 安全区各自处理:内容列顶出状态栏;底栏模式的导航栏避开手势区;
             // 抽屉内容顶/底部避让。rail 内部已自行 inset,无需处理
@@ -170,389 +178,7 @@ namespace AdaptiveShell.Platforms.Android
 
         bool _disposed;
 
-        bool? _previousLightStatusBars;
-        bool _lastLightStatusBars;
-
-        global::Android.Views.Window? _navigationAppearanceWindow;
-        bool? _previousLightNavigationBars;
-        bool _lastLightNavigationBars;
-        bool? _previousNavigationBarContrastEnforced;
-
-        global::Android.Views.Window? _themeBackgroundWindow;
-        global::Android.Graphics.Drawables.ColorDrawable? _previousThemeBackground;
-        global::Android.Graphics.Drawables.ColorDrawable? _ownedThemeBackground;
-        int _lastThemeBackgroundColor;
-        global::Android.Views.Window? _themeBackgroundHostChangedWindow;
-
-        private void OnRootAttachedToWindow(object? sender,
-            global::Android.Views.View.ViewAttachedToWindowEventArgs e)
-        {
-            // WindowHandler initializes system bars before content is attached. Posting also
-            // lets MAUI finish mapping the Page background used behind the top inset.
-            _overlayLayout.Post(UpdateStatusBarAppearance);
-            _overlayLayout.Post(UpdateNavigationBarAppearance);
-        }
-
-        private void OnRootDetachedFromWindow(object? sender,
-            global::Android.Views.View.ViewDetachedFromWindowEventArgs e)
-        {
-            RestoreStatusBarAppearance();
-            RestoreNavigationBarAppearance();
-        }
-
-        private void OnRootBackgroundChanged(object? sender, PropertyChangedEventArgs e)
-        {
-            if (e.PropertyName == nameof(AShell.BackgroundColor)
-                || e.PropertyName == nameof(AShell.Background))
-            {
-                _overlayLayout.Post(UpdateStatusBarAppearance);
-                _overlayLayout.Post(UpdateNavigationBarAppearance);
-            }
-        }
-
-        private void UpdateStatusBarAppearance()
-        {
-            if (_disposed || !_overlayLayout.IsAttachedToWindow
-                || !OperatingSystem.IsAndroidVersionAtLeast(23)
-                || _activity?.Window is not { } window)
-            {
-                return;
-            }
-
-            // Target 35+ is edge-to-edge unless its actual window theme opts out.
-            // Android 16 / target 36 also disables that opt-out. Earlier transparent
-            // windows are supported without changing legacy opaque purple bars.
-            int targetSdk = (int)(_context.ApplicationInfo?.TargetSdkVersion ?? 0);
-            bool forcedTransparent = OperatingSystem.IsAndroidVersionAtLeast(36) && targetSdk >= 36;
-#pragma warning disable CA1422 // The opt-out still applies on Android 15 / target 35.
-            if (!forcedTransparent && OperatingSystem.IsAndroidVersionAtLeast(35) && targetSdk >= 35)
-            {
-                using var windowStyle = _activity.ObtainStyledAttributes(
-                    new[] { global::Android.Resource.Attribute.WindowOptOutEdgeToEdgeEnforcement });
-                forcedTransparent = !windowStyle.GetBoolean(0, false);
-            }
-#pragma warning restore CA1422
-#pragma warning disable CA1422 // Reading the legacy color is needed only when it is still honored.
-            bool transparent = forcedTransparent || ((uint)window.StatusBarColor >> 24) == 0;
-#pragma warning restore CA1422
-            if (!transparent
-                || _overlayLayout.Background is not global::Android.Graphics.Drawables.ColorDrawable background
-                || background.Color.A != 255)
-            {
-                // A gradient or translucent root has no single known status-area color.
-                RestoreStatusBarAppearance();
-                return;
-            }
-
-            if (WindowCompat.GetInsetsController(window, window.DecorView) is not { } controller)
-            {
-                return;
-            }
-            bool lightBackground = ColorUtils.CalculateLuminance(background.Color.ToArgb()) > 0.5;
-            if (_previousLightStatusBars is null && controller.AppearanceLightStatusBars == lightBackground)
-            {
-                return;
-            }
-
-            _previousLightStatusBars ??= controller.AppearanceLightStatusBars;
-            controller.AppearanceLightStatusBars = lightBackground;
-            _lastLightStatusBars = lightBackground;
-        }
-
-        private void RestoreStatusBarAppearance()
-        {
-            if (_previousLightStatusBars is bool previous && _activity?.Window is { } window)
-            {
-                var controller = WindowCompat.GetInsetsController(window, window.DecorView);
-                // Do not overwrite a later appearance change made by the host or another page.
-                if (controller is not null && controller.AppearanceLightStatusBars == _lastLightStatusBars)
-                {
-                    controller.AppearanceLightStatusBars = previous;
-                }
-            }
-            _previousLightStatusBars = null;
-        }
-
-        private void UpdateNavigationBarAppearance()
-        {
-            if (_disposed || !_overlayLayout.IsAttachedToWindow
-                || !OperatingSystem.IsAndroidVersionAtLeast(26)
-                || _activity?.Window is not { } window)
-            {
-                return;
-            }
-
-            if (_navigationAppearanceWindow is not null
-                && !ReferenceEquals(_navigationAppearanceWindow, window))
-            {
-                // Ownership cannot transfer to a different host window.
-                RestoreNavigationBarAppearance();
-            }
-
-            int targetSdk = (int)(_context.ApplicationInfo?.TargetSdkVersion ?? 0);
-            bool edgeToEdge = OperatingSystem.IsAndroidVersionAtLeast(36) && targetSdk >= 36;
-#pragma warning disable CA1422 // The actual Android 15 theme may still opt out.
-            if (!edgeToEdge && OperatingSystem.IsAndroidVersionAtLeast(35) && targetSdk >= 35)
-            {
-                using var style = _activity.ObtainStyledAttributes(
-                    new[] { global::Android.Resource.Attribute.WindowOptOutEdgeToEdgeEnforcement });
-                edgeToEdge = !style.GetBoolean(0, false);
-            }
-            int legacyColor = window.NavigationBarColor;
-#pragma warning restore CA1422
-            int color;
-            bool transparent = edgeToEdge || ((uint)legacyColor >> 24) == 0;
-            if (transparent)
-            {
-                // In enforced edge-to-edge, getNavigationBarColor returns zero even
-                // while DecorView keeps a colored scrim internally. Do not save/restore
-                // that getter as the scrim's color. Own the readable contrast switch
-                // instead, and only when an opaque Shell surface covers the real inset.
-                if (!TryGetNavigationInsetColor(window, out color))
-                {
-                    RestoreNavigationBarAppearance();
-                    return;
-                }
-            }
-            else if (((uint)legacyColor >> 24) == 255)
-            {
-                // Legacy opaque host colors remain the actual button background.
-                color = legacyColor;
-            }
-            else
-            {
-                RestoreNavigationBarAppearance();
-                return;
-            }
-
-            UpdateThemeWindowBackground(window,
-                OperatingSystem.IsAndroidVersionAtLeast(36) && targetSdk >= 36 && transparent);
-
-            var controller = WindowCompat.GetInsetsController(window, window.DecorView);
-            if (controller is null)
-            {
-                return;
-            }
-            if (transparent && OperatingSystem.IsAndroidVersionAtLeast(29)
-                && window.NavigationBarContrastEnforced)
-            {
-                _navigationAppearanceWindow ??= window;
-                _previousNavigationBarContrastEnforced ??= window.NavigationBarContrastEnforced;
-                window.NavigationBarContrastEnforced = false;
-            }
-            bool lightBackground = ColorUtils.CalculateLuminance(color) > 0.5;
-            if (_previousLightNavigationBars is not null
-                || controller.AppearanceLightNavigationBars != lightBackground)
-            {
-                _navigationAppearanceWindow ??= window;
-                _previousLightNavigationBars ??= controller.AppearanceLightNavigationBars;
-                if (controller.AppearanceLightNavigationBars != lightBackground)
-                {
-                    controller.AppearanceLightNavigationBars = lightBackground;
-                }
-                _lastLightNavigationBars = lightBackground;
-            }
-        }
-
-        private bool TryGetNavigationInsetColor(global::Android.Views.Window window, out int color)
-        {
-            color = 0;
-            var insets = ViewCompat.GetRootWindowInsets(window.DecorView);
-            if (insets is null || !insets.IsVisible(WindowInsetsCompat.Type.NavigationBars()))
-            {
-                return false;
-            }
-            var navigation = insets.GetInsets(WindowInsetsCompat.Type.NavigationBars());
-            if (navigation.Bottom <= 0 || navigation.Left != 0 || navigation.Right != 0)
-            {
-                return false;
-            }
-
-            global::Android.Views.View provider = _isBottomBar ? _navigationView : _overlayLayout;
-            if (provider.Visibility != ViewStates.Visible || provider.Alpha != 1f
-                || _overlayLayout.Alpha != 1f || _linearLayout.Alpha != 1f
-                || _drawerPanel.Visibility == ViewStates.Visible
-                || _drawerScrim.Visibility == ViewStates.Visible)
-            {
-                return false;
-            }
-            var decorLocation = new int[2];
-            var providerLocation = new int[2];
-            window.DecorView.GetLocationOnScreen(decorLocation);
-            provider.GetLocationOnScreen(providerLocation);
-            int left = decorLocation[0];
-            int right = left + window.DecorView.Width;
-            int bottom = decorLocation[1] + window.DecorView.Height;
-            int top = bottom - navigation.Bottom;
-            if (window.DecorView.Width <= 0 || top < decorLocation[1]
-                || providerLocation[0] > left || providerLocation[1] > top
-                || providerLocation[0] + provider.Width < right
-                || providerLocation[1] + provider.Height < bottom)
-            {
-                return false;
-            }
-
-            if (_isBottomBar
-                && _navigationView.Background is global::Google.Android.Material.Shape.MaterialShapeDrawable shape
-                && shape.Alpha == 255 && shape.FillColor is { } fill
-                && _navigationView.BackgroundTintList is { } tint)
-            {
-                int fillColor = fill.GetColorForState(_navigationView.GetDrawableState(),
-                    new global::Android.Graphics.Color(fill.DefaultColor));
-                if (((uint)fillColor >> 24) != 255)
-                {
-                    return false;
-                }
-                color = tint.GetColorForState(_navigationView.GetDrawableState(),
-                    new global::Android.Graphics.Color(tint.DefaultColor));
-            }
-            else if (!_isBottomBar
-                && _overlayLayout.Background is global::Android.Graphics.Drawables.ColorDrawable background)
-            {
-                color = background.Color.ToArgb();
-            }
-            else
-            {
-                return false;
-            }
-            return ((uint)color >> 24) == 255;
-        }
-
-        private void UpdateThemeWindowBackground(global::Android.Views.Window window, bool forcedEdgeToEdge)
-        {
-            if (_themeBackgroundWindow is not null && !ReferenceEquals(_themeBackgroundWindow, window))
-            {
-                RestoreThemeWindowBackground();
-            }
-            if (ReferenceEquals(_themeBackgroundHostChangedWindow, window))
-            {
-                return;
-            }
-            var owned = _ownedThemeBackground;
-            if (owned is not null
-                && (window.DecorView.Background is not global::Android.Graphics.Drawables.ColorDrawable current
-                    || !current.Equals(owned) || current.Color.ToArgb() != _lastThemeBackgroundColor))
-            {
-                // A later host background wins, including edits to the same Drawable.
-                _themeBackgroundHostChangedWindow = window;
-                RestoreThemeWindowBackground();
-                return;
-            }
-            if (!forcedEdgeToEdge
-                || !RootCoversWindow(window)
-                || window.DecorView.Background is not global::Android.Graphics.Drawables.ColorDrawable original
-                || original.Alpha != 255 || original.Color.A != 255)
-            {
-                RestoreThemeWindowBackground();
-                return;
-            }
-
-            using var style = _activity!.ObtainStyledAttributes(
-                new[] { global::Android.Resource.Attribute.WindowBackground });
-            // Read the current native theme; never mutate or dispose its shared Drawable.
-            if (style.GetDrawable(0) is not global::Android.Graphics.Drawables.ColorDrawable theme
-                || theme.Alpha != 255 || theme.Color.A != 255)
-            {
-                RestoreThemeWindowBackground();
-                return;
-            }
-            int color = theme.Color.ToArgb();
-            if (original.Color.ToArgb() == color)
-            {
-                return;
-            }
-
-            // Android 16 derives its edge-to-edge navigation policy from the Window
-            // background. A fresh Drawable updates that policy through the public API;
-            // changing the color of the existing Drawable would skip that update.
-            var replacement = new global::Android.Graphics.Drawables.ColorDrawable(
-                new global::Android.Graphics.Color(color));
-            window.SetBackgroundDrawable(replacement);
-            if (window.DecorView.Background is not global::Android.Graphics.Drawables.ColorDrawable applied
-                || !applied.Equals(replacement))
-            {
-                // A composite background is not evidence of the Window's original
-                // Drawable. Do not take ownership or overwrite it on a later callback.
-                _themeBackgroundHostChangedWindow = window;
-                RestoreThemeWindowBackground();
-                return;
-            }
-            _themeBackgroundWindow ??= window;
-            _previousThemeBackground ??= original;
-            _ownedThemeBackground = replacement;
-            _lastThemeBackgroundColor = color;
-            // Only our replaced instance is released, after the Window stopped using it.
-            owned?.Dispose();
-        }
-
-        private bool RootCoversWindow(global::Android.Views.Window window)
-        {
-            var decor = window.DecorView;
-            if (!_overlayLayout.IsAttachedToWindow || _overlayLayout.Visibility != ViewStates.Visible
-                || _overlayLayout.Alpha != 1f || decor.Visibility != ViewStates.Visible || decor.Alpha != 1f
-                || _overlayLayout.Background is not global::Android.Graphics.Drawables.ColorDrawable root
-                || root.Alpha != 255 || root.Color.A != 255
-                || decor.Width <= 0 || decor.Height <= 0
-                || _overlayLayout.Width != decor.Width || _overlayLayout.Height != decor.Height)
-            {
-                return false;
-            }
-            var decorLocation = new int[2];
-            var rootLocation = new int[2];
-            decor.GetLocationOnScreen(decorLocation);
-            _overlayLayout.GetLocationOnScreen(rootLocation);
-            return rootLocation[0] == decorLocation[0] && rootLocation[1] == decorLocation[1];
-        }
-
-        private void RestoreThemeWindowBackground()
-        {
-            if (_themeBackgroundWindow is { } window && _ownedThemeBackground is { } owned)
-            {
-                var current = window.DecorView.Background;
-                if (ReferenceEquals(_activity?.Window, window)
-                    && current is global::Android.Graphics.Drawables.ColorDrawable color
-                    && color.Equals(owned) && color.Color.ToArgb() == _lastThemeBackgroundColor
-                    && _previousThemeBackground is { } previous)
-                {
-                    window.SetBackgroundDrawable(previous);
-                    current = window.DecorView.Background;
-                }
-                // Never dispose a host/theme Drawable, or our instance while the host
-                // still references it (for example after editing its color in place).
-                if (current is null || !current.Equals(owned))
-                {
-                    owned.Dispose();
-                }
-            }
-            _themeBackgroundWindow = null;
-            _previousThemeBackground = null;
-            _ownedThemeBackground = null;
-        }
-
-        private void RestoreNavigationBarAppearance()
-        {
-            RestoreThemeWindowBackground();
-            if (_navigationAppearanceWindow is { } window
-                && ReferenceEquals(_activity?.Window, window))
-            {
-                var controller = WindowCompat.GetInsetsController(window, window.DecorView);
-                if (_previousLightNavigationBars is bool light
-                    && controller is not null
-                    && controller.AppearanceLightNavigationBars == _lastLightNavigationBars)
-                {
-                    controller.AppearanceLightNavigationBars = light;
-                }
-                if (_previousNavigationBarContrastEnforced is bool contrast
-                    && OperatingSystem.IsAndroidVersionAtLeast(29)
-                    && !window.NavigationBarContrastEnforced)
-                {
-                    window.NavigationBarContrastEnforced = contrast;
-                }
-            }
-            _navigationAppearanceWindow = null;
-            _previousLightNavigationBars = null;
-            _previousNavigationBarContrastEnforced = null;
-        }
+        readonly AShellWindowAppearance _windowAppearance;
 
         private static AndroidX.Activity.ComponentActivity? FindActivity(Context context)
         {
@@ -723,11 +349,13 @@ namespace AdaptiveShell.Platforms.Android
                 _owner = owner;
             }
 
-            public WindowInsetsCompat OnApplyWindowInsets(
-                global::Android.Views.View v, WindowInsetsCompat insets)
+            public WindowInsetsCompat? OnApplyWindowInsets(
+                global::Android.Views.View? v, WindowInsetsCompat? insets)
             {
-                var top = insets.GetInsets(WindowInsetsCompat.Type.StatusBars()).Top;
-                var bottom = insets.GetInsets(WindowInsetsCompat.Type.NavigationBars()).Bottom;
+                if (insets is null)
+                    return null;
+                var top = insets.GetInsets(WindowInsetsCompat.Type.StatusBars())?.Top ?? 0;
+                var bottom = insets.GetInsets(WindowInsetsCompat.Type.NavigationBars())?.Bottom ?? 0;
 
                 // 内容列:顶出状态栏,底部交给页面/底栏各自避让
                 _owner._contentColumnLayout.SetPadding(0, top, 0, 0);
@@ -740,7 +368,7 @@ namespace AdaptiveShell.Platforms.Android
 
                 // 抽屉浮层:面板背景全高,内容避让状态栏与手势区
                 _owner._drawerPanel.SetPadding(0, top, 0, bottom);
-                _owner._overlayLayout.Post(_owner.UpdateNavigationBarAppearance);
+                _owner._overlayLayout.Post(_owner._windowAppearance.UpdateNavigationBarAppearance);
 
                 return insets;
             }
@@ -748,7 +376,9 @@ namespace AdaptiveShell.Platforms.Android
 
         private void OnRootLayoutChange(object? sender, global::Android.Views.View.LayoutChangeEventArgs e)
         {
-            _overlayLayout.Post(UpdateNavigationBarAppearance);
+            if (_disposed)
+                return;
+            _overlayLayout.Post(_windowAppearance.UpdateNavigationBarAppearance);
             var widthDp = (int)((e.Right - e.Left) / _density);
             var useBottomBar = widthDp < CompactWidthBreakpointDp;
             if (useBottomBar != _isBottomBar)
@@ -826,7 +456,7 @@ namespace AdaptiveShell.Platforms.Android
 
             UpdateItems();
             UpdateColors();
-            UpdateCurrentItem();
+            UpdateCurrentItem(preserveLanding: true);
 
             // 新建的导航视图需要重新拿到 insets(底栏避让手势区/rail 自 inset)
             ViewCompat.RequestApplyInsets(_linearLayout);
@@ -864,11 +494,15 @@ namespace AdaptiveShell.Platforms.Android
                 float currentAngle = menuButton.Rotation;
                 float targetAngle = expanding ? 360 : 180f;
                 DisposeMenuAnimator();
-                _menuAnimator = ValueAnimator.OfFloat(currentAngle, targetAngle);
-                _menuAnimator.SetInterpolator(new OvershootInterpolator(1.0f));
-                _menuAnimator.Update += (s, e) =>
+                var animator = ValueAnimator.OfFloat(currentAngle, targetAngle)
+                    ?? throw new InvalidOperationException("Could not create the rail animation.");
+                _menuAnimator = animator;
+                animator.SetInterpolator(new OvershootInterpolator(1.0f));
+                animator.Update += (s, e) =>
                 {
-                    float animatedValue = (float)e.Animation.AnimatedValue;
+                    if (e.Animation?.AnimatedValue is not { } value)
+                        return;
+                    float animatedValue = (float)value;
                     menuButton.Rotation = animatedValue;
 
                     if (menuButton.Rotation > 270f)
@@ -881,8 +515,8 @@ namespace AdaptiveShell.Platforms.Android
                     }
                 };
 
-                _menuAnimator.SetDuration(300);
-                _menuAnimator.Start();
+                animator.SetDuration(300);
+                animator.Start();
 
                 if (expanding)
                 {
@@ -899,6 +533,13 @@ namespace AdaptiveShell.Platforms.Android
 
         private void OnPlatformViewItemInvoked(object? sender, NavigationBarView.ItemSelectedEventArgs e)
         {
+            if (_disposed)
+                return;
+            if (_updatingNativeSelection)
+            {
+                e.Handled = true;
+                return;
+            }
             if (e.Item != null)
             {
                 var content = _contentToMenuItemMap.
@@ -913,6 +554,10 @@ namespace AdaptiveShell.Platforms.Android
                     if (!ReferenceEquals(_virtualView.CurrentItem, content))
                     {
                         _virtualView.CurrentItem = content;
+                    }
+                    else
+                    {
+                        UpdateCurrentItem();
                     }
 
                     return;
@@ -948,12 +593,13 @@ namespace AdaptiveShell.Platforms.Android
         // 从 rail 边缘弹出盖在内容上方(不挤压视口);再点组条目切换开合
         private void ToggleGroupDrawer(AShellGroup group)
         {
-            if (_drawerPanel.Visibility == ViewStates.Visible)
+            if (_drawerPanel.Visibility == ViewStates.Visible && ReferenceEquals(_drawerGroup, group))
             {
                 CloseDrawer();
                 return;
             }
 
+            _drawerGroup = group;
             BuildDrawerMenu(group);
 
             // 贴齐 rail 右缘弹出;rail 展开时跟随其当前宽度
@@ -969,6 +615,7 @@ namespace AdaptiveShell.Platforms.Android
         // 子菜单列表:56dp 行高、图标+标题、ripple,点击选中子页
         private void BuildDrawerMenu(AShellGroup group)
         {
+            _drawerIconGeneration++;
             _drawerPanel.RemoveAllViews();
 
             var list = new LinearLayout(_context)
@@ -1016,6 +663,10 @@ namespace AdaptiveShell.Platforms.Android
                     {
                         _virtualView.CurrentItem = child;
                     }
+                    else
+                    {
+                        UpdateCurrentItem();
+                    }
                 };
 
                 list.AddView(row);
@@ -1028,16 +679,24 @@ namespace AdaptiveShell.Platforms.Android
 
         private async void LoadRowIconAsync(AShellContent item, ImageView iconView)
         {
-            if (item.Icon is null)
+            var source = item.Icon;
+            int generation = _drawerIconGeneration;
+            if (source is null)
             {
                 return;
             }
 
-            var result = await item.Icon.GetPlatformImageAsync(_mauiContext);
-            if (result?.Value is global::Android.Graphics.Drawables.Drawable drawable)
+            try
             {
-                iconView.SetImageDrawable(drawable);
+                using var result = await source.GetPlatformImageAsync(_mauiContext);
+                if (!_disposed && generation == _drawerIconGeneration
+                    && ReferenceEquals(item.Icon, source)
+                    && _drawerGroup is { } group && group.Items.Contains(item)
+                    && iconView.Parent is not null
+                    && result?.Value is global::Android.Graphics.Drawables.Drawable drawable)
+                    iconView.SetImageDrawable(drawable);
             }
+            catch (Exception) { /* A removed or replaced image source cannot update this row. */ }
         }
 
         private void OnRailLayoutChange(object? sender, global::Android.Views.View.LayoutChangeEventArgs e)
@@ -1070,8 +729,10 @@ namespace AdaptiveShell.Platforms.Android
 
         private void CloseDrawer()
         {
+            _drawerIconGeneration++;
             _drawerPanel.Visibility = ViewStates.Gone;
             _drawerScrim.Visibility = ViewStates.Gone;
+            _drawerGroup = null;
             UpdateBackCallbackState();
         }
 
@@ -1080,6 +741,11 @@ namespace AdaptiveShell.Platforms.Android
         // 不是从栈中移除
         private void ShowGroupLanding(AShellGroup group)
         {
+            _displayedLandingGroup = group;
+            _landingCurrentItem = _virtualView.CurrentItem;
+            CloseDrawer();
+            if (_groupToMenuItemMap.TryGetValue(group, out var groupItem))
+                SelectMenuItem(groupItem.ItemId);
             var landingView = GetOrCreateLandingView(group);
 
             if (!ReferenceEquals(landingView.Parent, _contentFrameLayout))
@@ -1111,93 +777,40 @@ namespace AdaptiveShell.Platforms.Android
         {
             if (!_groupToLandingViewMap.TryGetValue(group, out var view))
             {
-                var page = CreateLandingPage(group);
+                var page = DefaultLandingPage.Create(group, NavigateToContent);
 
                 // 挂到 AShell 逻辑树,保证资源/样式解析链连通
                 _virtualView.AddLogicalChild(page);
 
                 view = page.ToPlatform(_mauiContext);
                 _groupToLandingViewMap[group] = view;
+                _groupToLandingPageMap[group] = page;
+                var children = new List<AShellContent>(group.Items).ToArray();
+                var childIds = new string?[children.Length];
+                for (int i = 0; i < children.Length; i++)
+                    childIds[i] = children[i].AutomationId ?? children[i].Title;
+                _landingSnapshots[group] = (group.LandingTemplate, children,
+                    group.AutomationId ?? group.Title, childIds);
             }
 
             return view;
         }
 
-        private Page CreateLandingPage(AShellGroup group)
+        private void NavigateToContent(AShellContent child)
         {
-            if (group.LandingTemplate is not null)
-            {
-                return (Page)group.LandingTemplate.CreateContent();
-            }
-
-            var layout = new VerticalStackLayout
-            {
-                Padding = new Thickness(20, 12),
-                Spacing = 4,
-            };
-
-            foreach (var child in group.Items)
-            {
-                layout.Add(CreateLandingRow(child));
-            }
-
-            return new ContentPage
-            {
-                Title = group.Title,
-                Content = new Microsoft.Maui.Controls.ScrollView
-                {
-                    AutomationId = $"landing-{group.AutomationId ?? group.Title}-body",
-                    Content = layout,
-                },
-            };
+            if (!ReferenceEquals(_virtualView.CurrentItem, child))
+                _virtualView.CurrentItem = child;
+            else
+                UpdateCurrentItem();
         }
 
-        private Microsoft.Maui.Controls.View CreateLandingRow(AShellContent child)
+        private void SelectMenuItem(int itemId)
         {
-            var row = new HorizontalStackLayout
-            {
-                Spacing = 14,
-                Padding = new Thickness(4, 12),
-                // 落地页行与子页条目区分定位,加 landing- 前缀
-                AutomationId = $"landing-{child.AutomationId ?? child.Title}",
-            };
-
-            var title = new Label
-            {
-                AutomationId = $"{row.AutomationId}-title",
-                Text = child.Title,
-                FontSize = 17,
-                VerticalOptions = LayoutOptions.Center,
-            };
-
-            if (child.Icon is not null)
-            {
-                var icon = new Image
-                {
-                    AutomationId = $"{row.AutomationId}-icon",
-                    Source = child.Icon,
-                    WidthRequest = 24,
-                    HeightRequest = 24,
-                    VerticalOptions = LayoutOptions.Center,
-                };
-                AutomationProperties.SetIsInAccessibleTree(icon, true);
-                icon.Behaviors.Add(new DefaultLandingIconTint(title));
-                row.Add(icon);
-            }
-
-            row.Add(title);
-
-            var tap = new TapGestureRecognizer();
-            tap.Tapped += (_, _) =>
-            {
-                if (!ReferenceEquals(_virtualView.CurrentItem, child))
-                {
-                    _virtualView.CurrentItem = child;
-                }
-            };
-            row.GestureRecognizers.Add(tap);
-
-            return row;
+            if (_navigationView.SelectedItemId == itemId)
+                return;
+            _updatingNativeSelection = true;
+            try { _navigationView.SelectedItemId = itemId; }
+            finally { _updatingNativeSelection = false; }
         }
 
         // 设置/清除导航图标时 toolbar 会重建导航按钮视图,
@@ -1207,6 +820,8 @@ namespace AdaptiveShell.Platforms.Android
             // 导航按钮要到布局阶段才挂进 toolbar,需 post 到布局完成后再找
             _toolbar.Post(() =>
             {
+                if (_disposed || _toolbarGroup is null)
+                    return;
                 for (int i = 0; i < _toolbar.ChildCount; i++)
                 {
                     if (_toolbar.GetChildAt(i) is ImageButton navButton)
@@ -1235,11 +850,9 @@ namespace AdaptiveShell.Platforms.Android
             }
 
             _disposed = true;
-            _virtualView.PropertyChanged -= OnRootBackgroundChanged;
-            _overlayLayout.ViewAttachedToWindow -= OnRootAttachedToWindow;
-            _overlayLayout.ViewDetachedFromWindow -= OnRootDetachedFromWindow;
-            RestoreStatusBarAppearance();
-            RestoreNavigationBarAppearance();
+            _menuIconGeneration++;
+            _drawerIconGeneration++;
+            _windowAppearance.Dispose();
             if (_configListener is not null)
             {
                 _activity?.RemoveOnConfigurationChangedListener(_configListener);
@@ -1257,6 +870,7 @@ namespace AdaptiveShell.Platforms.Android
             DisposeMenuAnimator();
 
             _backCallback?.Remove();
+            ClearCachedViews();
             _navigationView?.Dispose();
             _navHeaderFrameLayout?.Dispose();
             _toolbar?.Dispose();
@@ -1278,6 +892,30 @@ namespace AdaptiveShell.Platforms.Android
 
         public void UpdateItems()
         {
+            _menuIconGeneration++;
+            // Default rows bind title/icon live. Preserve custom landing state unless
+            // its template or group membership changed.
+            foreach (var group in new List<AShellGroup>(_groupToLandingViewMap.Keys))
+            {
+                if (!_virtualView.Items.Contains(group) || LandingStructureChanged(group))
+                    RemoveLandingView(group);
+            }
+
+            foreach (var entry in new List<KeyValuePair<AShellContent, (Page Page, global::Android.Views.View View)>>(_contentPageViews))
+            {
+                if (!ContainsContent(entry.Key) || !ReferenceEquals(entry.Key.CachedPage, entry.Value.Page))
+                {
+                    _contentFrameLayout.RemoveView(entry.Value.View);
+                    _contentPageViews.Remove(entry.Key);
+                }
+            }
+            if (_displayedLandingGroup is not null && !_virtualView.Items.Contains(_displayedLandingGroup))
+                _displayedLandingGroup = null;
+            if (_drawerGroup is not null && !_virtualView.Items.Contains(_drawerGroup))
+                CloseDrawer();
+            else if (_drawerGroup is { } openGroup && _drawerPanel.Visibility == ViewStates.Visible)
+                BuildDrawerMenu(openGroup);
+
             _navigationView.Menu.Clear();
             _contentToMenuItemMap.Clear();
             _groupToMenuItemMap.Clear();
@@ -1293,7 +931,8 @@ namespace AdaptiveShell.Platforms.Android
                 }
                 else if (item is AShellGroup group)
                 {
-                    var menuItem = _navigationView.Menu.Add(0, index + 1, index, group.Title);
+                    var menuItem = _navigationView.Menu.Add(0, index + 1, index, group.Title)
+                        ?? throw new InvalidOperationException("Could not add a group navigation item.");
                     index++;
                     ApplyMenuItemAccessibility(menuItem, group);
                     _groupToMenuItemMap[group] = menuItem;
@@ -1302,11 +941,60 @@ namespace AdaptiveShell.Platforms.Android
             }
         }
 
+        private bool ContainsContent(AShellContent content) =>
+            _virtualView.Items.Contains(content) || FindGroupOf(content) is not null;
+
+        private void RemoveLandingView(AShellGroup group)
+        {
+            _landingSnapshots.Remove(group);
+            if (_groupToLandingViewMap.Remove(group, out var view))
+                _contentFrameLayout.RemoveView(view);
+            if (_groupToLandingPageMap.Remove(group, out var page))
+            {
+                _virtualView.RemoveLogicalChild(page);
+                page.Handler?.DisconnectHandler();
+            }
+        }
+
+        private bool LandingStructureChanged(AShellGroup group)
+        {
+            if (!_landingSnapshots.TryGetValue(group, out var snapshot)
+                || !ReferenceEquals(snapshot.Template, group.LandingTemplate)
+                || snapshot.Children.Length != group.Items.Count)
+                return true;
+            for (int i = 0; i < snapshot.Children.Length; i++)
+            {
+                if (!ReferenceEquals(snapshot.Children[i], group.Items[i]))
+                    return true;
+            }
+            if (snapshot.Template is null)
+            {
+                if (snapshot.GroupId != (group.AutomationId ?? group.Title))
+                    return true;
+                for (int i = 0; i < snapshot.Children.Length; i++)
+                {
+                    if (snapshot.ChildIds[i] != (group.Items[i].AutomationId ?? group.Items[i].Title))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        private void ClearCachedViews()
+        {
+            foreach (var group in new List<AShellGroup>(_groupToLandingViewMap.Keys))
+                RemoveLandingView(group);
+            foreach (var entry in _contentPageViews.Values)
+                _contentFrameLayout.RemoveView(entry.View);
+            _contentPageViews.Clear();
+        }
+
         // 显式设置了 AutomationId 时用它作 content-desc(无障碍/测试定位),
         // 否则保持 Title 作朗读标签
         private static void ApplyMenuItemAccessibility(IMenuItem menuItem, AShellItem item)
         {
-            menuItem.SetContentDescription(new Java.Lang.String(item.AutomationId ?? item.Title));
+            using var description = new Java.Lang.String(item.AutomationId ?? item.Title);
+            MenuItemCompat.SetContentDescription(menuItem, description);
         }
 
         private AShellGroup? FindGroupOf(AShellContent child)
@@ -1324,7 +1012,8 @@ namespace AdaptiveShell.Platforms.Android
 
         private void AddMenuItem(AShellContent content, int index)
         {
-            var menuItem = _navigationView.Menu.Add(0, index + 1, index, content.Title);
+            var menuItem = _navigationView.Menu.Add(0, index + 1, index, content.Title)
+                ?? throw new InvalidOperationException("Could not add a content navigation item.");
             ApplyMenuItemAccessibility(menuItem, content);
             _contentToMenuItemMap[content] = menuItem;
             LoadIconAsync(content, menuItem);
@@ -1392,8 +1081,8 @@ namespace AdaptiveShell.Platforms.Android
                 new global::Android.Graphics.Color(
                     ResolveThemeColor(_context, (onSurface & 0x00ffffff) | 0x1f000000,
                         "colorControlHighlight")));
-            UpdateStatusBarAppearance();
-            UpdateNavigationBarAppearance();
+            _windowAppearance.UpdateStatusBarAppearance();
+            _windowAppearance.UpdateNavigationBarAppearance();
         }
 
         private int ResolveOnSurfaceColor() =>
@@ -1428,38 +1117,63 @@ namespace AdaptiveShell.Platforms.Android
 
         private async void LoadIconAsync(AShellItem item, IMenuItem menuItem)
         {
-            if (item.Icon is null)
+            var source = item.Icon;
+            int generation = _menuIconGeneration;
+            if (source is null)
             {
                 return;
             }
 
-            var result = await item.Icon.GetPlatformImageAsync(_mauiContext);
-            if (result?.Value is not global::Android.Graphics.Drawables.Drawable drawable)
+            try
             {
-                return;
-            }
+                using var result = await source.GetPlatformImageAsync(_mauiContext);
+                if (result?.Value is not global::Android.Graphics.Drawables.Drawable drawable)
+                    return;
 
-            bool stillCurrent = item switch
-            {
-                AShellContent content =>
-                    _contentToMenuItemMap.TryGetValue(content, out var t) && ReferenceEquals(t, menuItem),
-                AShellGroup group =>
-                    _groupToMenuItemMap.TryGetValue(group, out var t) && ReferenceEquals(t, menuItem),
-                _ => false,
-            };
+                bool stillCurrent = item switch
+                {
+                    AShellContent content =>
+                        _contentToMenuItemMap.TryGetValue(content, out var t) && ReferenceEquals(t, menuItem),
+                    AShellGroup group =>
+                        _groupToMenuItemMap.TryGetValue(group, out var t) && ReferenceEquals(t, menuItem),
+                    _ => false,
+                };
 
-            if (stillCurrent)
-            {
-                menuItem.SetIcon(drawable);
+                if (!_disposed && generation == _menuIconGeneration
+                    && ReferenceEquals(item.Icon, source) && stillCurrent)
+                    menuItem.SetIcon(drawable);
             }
+            catch (Exception) { /* An invalidated image cannot update this menu. */ }
         }
 
-        public void UpdateCurrentItem()
+        public void UpdateCurrentItem(bool preserveLanding = false)
         {
-            if (_virtualView.CurrentItem is null)
+            if (preserveLanding && _virtualView.CurrentItem is not null
+                && ReferenceEquals(_virtualView.CurrentItem, _landingCurrentItem)
+                && _displayedLandingGroup is { } landing
+                && _virtualView.Items.Contains(landing))
             {
+                ShowGroupLanding(landing);
                 return;
             }
+
+            if (_virtualView.CurrentItem is null)
+            {
+                _displayedLandingGroup = null;
+                _landingCurrentItem = null;
+                _toolbarGroup = null;
+                _toolbar.Visibility = ViewStates.Gone;
+                CloseDrawer();
+                for (int i = 0; i < _contentFrameLayout.ChildCount; i++)
+                    _contentFrameLayout.GetChildAt(i)!.Visibility = ViewStates.Gone;
+                SelectMenuItem(0);
+                for (int i = 0; i < _navigationView.Menu.Size(); i++)
+                    _navigationView.Menu.GetItem(i)?.SetChecked(false);
+                return;
+            }
+
+            _displayedLandingGroup = null;
+            _landingCurrentItem = null;
 
             // 选中项:叶子页面对应自身条目;组内子页面对应组条目(保持组高亮)
             IMenuItem? selectedMenuItem = null;
@@ -1476,14 +1190,22 @@ namespace AdaptiveShell.Platforms.Android
             if (selectedMenuItem is not null
                 && _navigationView.SelectedItemId != selectedMenuItem.ItemId)
             {
-                _navigationView.SelectedItemId = selectedMenuItem.ItemId;
+                SelectMenuItem(selectedMenuItem.ItemId);
             }
 
-            var targetView = ((IAShellContentController)_virtualView.CurrentItem)?.page.ToPlatform(_mauiContext);
+            var page = ((IAShellContentController)_virtualView.CurrentItem).page;
+            if (_contentPageViews.TryGetValue(_virtualView.CurrentItem, out var cached)
+                && !ReferenceEquals(cached.Page, page))
+            {
+                _contentFrameLayout.RemoveView(cached.View);
+                _contentPageViews.Remove(_virtualView.CurrentItem);
+            }
+            var targetView = page.ToPlatform(_mauiContext);
             if (targetView is null)
             {
                 return;
             }
+            _contentPageViews[_virtualView.CurrentItem] = (page, targetView);
 
             if (!ReferenceEquals(targetView.Parent, _contentFrameLayout))
             {

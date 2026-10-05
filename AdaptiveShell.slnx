@@ -4,4 +4,5 @@
     <Deploy Solution="Debug|*" />
   </Project>
   <Project Path="Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj" />
+  <Project Path="Tests/AdaptiveShell.UnitTests/AdaptiveShell.UnitTests.csproj" />
 </Solution>

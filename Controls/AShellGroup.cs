@@ -20,7 +20,7 @@ namespace AdaptiveShell.Controls
 
         public ObservableCollection<AShellContent> Items => _items;
 
-        // 组落地页模板(仅 Apple tab 模式):设置后替代壳内置的默认子项列表页
+        // 紧凑导航形态下的组落地页模板(Apple 和 Android)。
         public DataTemplate? LandingTemplate
         {
             get { return (DataTemplate?)GetValue(LandingTemplateProperty); }
@@ -28,5 +28,14 @@ namespace AdaptiveShell.Controls
         }
 
         internal AShellContent? FirstLeaf() => Items.FirstOrDefault();
+
+        protected override void OnParentSet()
+        {
+            base.OnParentSet();
+            foreach (var content in _items)
+            {
+                content.UpdatePageOwner();
+            }
+        }
     }
 }

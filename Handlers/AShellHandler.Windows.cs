@@ -1,9 +1,4 @@
-using Microsoft.Maui.Controls.Platform;
 using Microsoft.Maui.Handlers;
-using System;
-using System.Collections.Generic;
-using System.Text;
-using Windows.Graphics.Display;
 
 using AdaptiveShell.Controls;
 using AdaptiveShell.Platforms.Windows;
@@ -14,17 +9,12 @@ namespace AdaptiveShell.Handlers
     public partial class AShellHandler : ViewHandler<AShell, NavigationView>
     {
 
-        private AShellView _platformViewController;
+        private AShellView? _platformViewController;
         protected override NavigationView CreatePlatformView()
         {
-            _platformViewController = new AShellView(VirtualView, MauiContext);
+            _platformViewController = new AShellView(VirtualView,
+                MauiContext ?? throw new InvalidOperationException("MAUI context is required for AShell."));
             return _platformViewController.PlatformView;
-        }
-
-        protected override void ConnectHandler(NavigationView platformView)
-        {
-            base.ConnectHandler(platformView);
-            // Perform any control setup here
         }
 
         protected override void DisconnectHandler(NavigationView platformView)
@@ -42,6 +32,7 @@ namespace AdaptiveShell.Handlers
 
         public static void MapCurrentItem(AShellHandler handler, AShell shell)
         {
+            if (shell.IsUpdatingItems) return;
             handler._platformViewController?.UpdateCurrentItem();
         }
 

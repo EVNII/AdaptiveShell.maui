@@ -4,9 +4,12 @@ Adaptive shell navigation for .NET MAUI. The navigation chrome adapts to the pla
 
 ## Platforms
 
-- Android
-- iOS
-- Mac Catalyst
+- Android 6.0 (API 23) or later
+- iOS 18 or later
+- Mac Catalyst 18 or later
+- Windows 10 version 1809 (build 17763) or later
+
+The current Apple target frameworks use the .NET 10 iOS/Mac Catalyst 26.5 bindings. The example keeps `ValidateXcodeVersion=false` for the separate iPhone Duo/Xcode 27.1 build path; Duo remains outside the automated release gate.
 
 ## Install
 
@@ -67,7 +70,9 @@ See `Example/ExampleAShellApp` for a full sample.
 
 ## Testing
 
-E2E tests live in `Tests/AdaptiveShell.UITests`. They drive the example app through the accessibility tree via Appium — locators use accessibility identifiers, never screen coordinates.
+Headless navigation-model regressions live in `Tests/AdaptiveShell.UnitTests`. Run them with `dotnet test Tests/AdaptiveShell.UnitTests/AdaptiveShell.UnitTests.csproj`; they compile the shared controls directly for `net10.0`. `.github/workflows/unit-tests.yml` runs them on private `master` and the synced public `main`.
+
+E2E tests live in `Tests/AdaptiveShell.UITests`. They drive the example app through the accessibility tree via Appium — locators use accessibility identifiers, never screen coordinates. The example pages expose `page-home`, `page-home2`, `page-music`, and `page-photos` markers so navigation tests verify the actual destination.
 
 Prerequisites:
 

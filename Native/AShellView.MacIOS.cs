@@ -21,6 +21,22 @@ namespace AdaptiveShell.Platforms.MacIOS
         Dictionary<AShellGroup, UINavigationController> _groupToNavMap;
 
         List<PageContainerViewController> _landingContainers;
+        readonly Dictionary<AShellGroup, AShellContent[]> _groupChildren = new();
+        readonly Dictionary<AShellGroup, UITab[]> _groupChildTabs = new();
+        readonly Dictionary<AShellGroup, DataTemplate?> _landingTemplates = new();
+        readonly Dictionary<AShellGroup, string?[]> _landingIdentities = new();
+        readonly Dictionary<AShellContent, Page> _containerPages = new();
+        readonly Dictionary<AShellContent, bool> _contentNavigationMode = new();
+        readonly Dictionary<AShellGroup, Page> _landingPages = new();
+        readonly Dictionary<AShellItem, int> _iconVersions = new();
+        readonly Dictionary<AShellItem, ImageSource?> _iconSources = new();
+        readonly List<UITab> _retiredTabs = new();
+        readonly List<PageContainerViewController> _retiredContainers = new();
+        AShellContent? _lastCurrentItem;
+        AShellGroup? _landingGroupBeforeItems;
+        UIColor? _defaultTabTint, _defaultViewTint, _defaultUnselectedTint;
+        bool _colorsCaptured;
+        bool _disconnected;
 
         public AShellViewBase(AShell aShell, IMauiContext mauiContext)
         {
@@ -32,6 +48,42 @@ namespace AdaptiveShell.Platforms.MacIOS
             _groupToLandingMap = new Dictionary<AShellGroup, PageContainerViewController>();
             _groupToNavMap = new Dictionary<AShellGroup, UINavigationController>();
             _landingContainers = new List<PageContainerViewController>();
+        }
+
+        public void Disconnect()
+        {
+            if (_disconnected) return;
+            _disconnected = true;
+            Delegate = null!;
+            SetTabs(Array.Empty<UITab>(), false);
+            foreach (var content in _contentToUITabMap.Keys)
+                content.FullBleedChanged -= OnContentFullBleedChanged;
+            foreach (var container in _contentToContainerMap.Values)
+                RetireContainer(container);
+            foreach (var navigation in _groupToNavMap.Values)
+            {
+                navigation.SetViewControllers(Array.Empty<UIViewController>(), false);
+                navigation.Dispose();
+            }
+            foreach (var group in _groupToLandingMap.Keys.ToArray()) RemoveLanding(group);
+            foreach (var tab in _contentToUITabMap.Values.Concat<UITab>(_groupToUITabGroupMap.Values))
+                _retiredTabs.Add(tab);
+            DisposeRetiredTabs();
+            _contentToUITabMap.Clear();
+            _groupToUITabGroupMap.Clear();
+            _contentToContainerMap.Clear();
+            _containerPages.Clear();
+            _contentNavigationMode.Clear();
+            _landingPages.Clear();
+            _groupToNavMap.Clear();
+            _groupChildren.Clear();
+            _groupChildTabs.Clear();
+            _landingTemplates.Clear();
+            _landingIdentities.Clear();
+            _iconVersions.Clear();
+            _iconSources.Clear();
+            _tabBarDelegate?.Dispose();
+            _tabBarDelegate = null;
         }
 
         private UIViewController CreatePage(AShellContent item, bool wrapInNavigation = true)
@@ -51,6 +103,7 @@ namespace AdaptiveShell.Platforms.MacIOS
 
             var container = new PageContainerViewController(controller);
             _contentToContainerMap[item] = container;
+            _containerPages[item] = page;
 
             return wrapInNavigation
                 ? new UINavigationController(container)
@@ -59,27 +112,104 @@ namespace AdaptiveShell.Platforms.MacIOS
 
         public void UpdateItems()
         {
+            if (_disconnected) return;
+            _landingGroupBeforeItems = _groupToNavMap.Keys.FirstOrDefault(group =>
+                _groupToLandingMap.TryGetValue(group, out var landing)
+                && ReferenceEquals(_groupToNavMap[group].TopViewController, landing)
+                && ((_groupToUITabGroupMap.TryGetValue(group, out var groupTab)
+                        && ReferenceEquals(SelectedTab, groupTab))
+                    || group.Items.Any(child => _contentToUITabMap.TryGetValue(child, out var childTab)
+                        && ReferenceEquals(SelectedTab, childTab))));
             Delegate = _tabBarDelegate ??= new TabBarDelegate(this);
 
             var tabs = new List<UITab>();
+            var desiredContents = new HashSet<AShellContent>();
+            var desiredGroups = new HashSet<AShellGroup>();
 
             foreach (var item in _virtualView.Items)
             {
                 if (item is AShellContent content)
                 {
+                    desiredContents.Add(content);
                     tabs.Add(GetOrCreateTab(content));
                 }
                 else if (item is AShellGroup group)
                 {
+                    desiredGroups.Add(group);
+                    foreach (var child in group.Items) desiredContents.Add(child);
                     tabs.Add(GetOrCreateGroup(group));
                 }
             }
 
             SetTabs(tabs.ToArray(), false);
+            foreach (var container in _retiredContainers) RetireContainer(container);
+            _retiredContainers.Clear();
+            foreach (var content in _contentToUITabMap.Keys.Where(x => !desiredContents.Contains(x)).ToArray())
+            {
+                content.FullBleedChanged -= OnContentFullBleedChanged;
+                _retiredTabs.Add(_contentToUITabMap[content]);
+                _contentToUITabMap.Remove(content);
+                if (_contentToContainerMap.Remove(content, out var container)) RetireContainer(container);
+                _containerPages.Remove(content);
+                _contentNavigationMode.Remove(content);
+                _iconVersions.Remove(content);
+                _iconSources.Remove(content);
+            }
+            foreach (var group in _groupToUITabGroupMap.Keys.Where(x => !desiredGroups.Contains(x)).ToArray())
+            {
+                _retiredTabs.Add(_groupToUITabGroupMap[group]);
+                _groupToUITabGroupMap.Remove(group);
+                if (_groupToNavMap.Remove(group, out var navigation))
+                {
+                    navigation.SetViewControllers(Array.Empty<UIViewController>(), false);
+                    navigation.Dispose();
+                }
+                RemoveLanding(group);
+                _groupChildren.Remove(group);
+                _groupChildTabs.Remove(group);
+                _landingTemplates.Remove(group);
+                _landingIdentities.Remove(group);
+                _iconVersions.Remove(group);
+                _iconSources.Remove(group);
+            }
+            DisposeRetiredTabs();
+            UpdateContentContainers();
+        }
+
+        private void RetireContainer(PageContainerViewController container)
+        {
+            if (container.NavigationController is { } navigation)
+            {
+                var remaining = (navigation.ViewControllers ?? Array.Empty<UIViewController>())
+                    .Where(c => !ReferenceEquals(c, container)).ToArray();
+                navigation.SetViewControllers(remaining, false);
+            }
+            container.DetachContent();
+            container.Dispose();
+        }
+
+        private void DisposeRetiredTabs()
+        {
+            foreach (var tab in _retiredTabs.Distinct()) tab.Dispose();
+            _retiredTabs.Clear();
         }
 
         private UITab GetOrCreateTab(AShellContent content, bool wrapInNavigation = true)
         {
+            if (_containerPages.TryGetValue(content, out var oldPage)
+                && !ReferenceEquals(oldPage, content.CachedPage))
+            {
+                if (_contentToContainerMap.Remove(content, out var oldContainer))
+                    _retiredContainers.Add(oldContainer);
+                _containerPages.Remove(content);
+                if (_contentToUITabMap.Remove(content, out var oldTab)) _retiredTabs.Add(oldTab);
+            }
+            if (_contentToUITabMap.ContainsKey(content)
+                && _contentNavigationMode.TryGetValue(content, out var oldMode)
+                && oldMode != wrapInNavigation)
+            {
+                if (_contentToUITabMap.Remove(content, out var oldTab)) _retiredTabs.Add(oldTab);
+            }
             if (!_contentToUITabMap.TryGetValue(content, out var tab))
             {
                 tab = new UITab(
@@ -90,24 +220,60 @@ namespace AdaptiveShell.Platforms.MacIOS
                 tab.AccessibilityIdentifier = content.AutomationId ?? content.Title;
 
                 _contentToUITabMap[content] = tab;
-                content.FullBleedChanged += OnContentFullBleedChanged;
-                LoadIconAsync(content, tab);
+                if (!_contentNavigationMode.ContainsKey(content))
+                {
+                    content.FullBleedChanged += OnContentFullBleedChanged;
+                }
+                _contentNavigationMode[content] = wrapInNavigation;
+                RefreshIcon(content, tab, force: true);
             }
+
+            tab.Title = content.Title ?? "Untitled";
+            tab.AccessibilityIdentifier = content.AutomationId ?? content.Title;
+            if (_contentToContainerMap.TryGetValue(content, out var container))
+                container.Title = content.Title;
+            RefreshIcon(content, tab);
 
             return tab;
         }
 
         private UITabGroup GetOrCreateGroup(AShellGroup group)
         {
+            var children = new List<UITab>();
+            foreach (var child in group.Items)
+                children.Add(GetOrCreateTab(child, wrapInNavigation: false));
+
+            bool childrenChanged = !_groupChildren.TryGetValue(group, out var previous)
+                || !previous.SequenceEqual(group.Items);
+            childrenChanged |= !_groupChildTabs.TryGetValue(group, out var priorTabs)
+                || !priorTabs.SequenceEqual(children);
+            bool templateChanged = _landingTemplates.TryGetValue(group, out var oldTemplate)
+                && !ReferenceEquals(oldTemplate, group.LandingTemplate);
+            var identity = new[] { group.AutomationId ?? group.Title }
+                .Concat(group.Items.Select(child => child.AutomationId ?? child.Title)).ToArray();
+            bool identityChanged = group.LandingTemplate is null && oldTemplate is null
+                && _landingIdentities.TryGetValue(group, out var oldIdentity)
+                && !oldIdentity.SequenceEqual(identity);
+            if (childrenChanged)
+            {
+                if (_groupToUITabGroupMap.Remove(group, out var oldTab)) _retiredTabs.Add(oldTab);
+                if (group.LandingTemplate is not null
+                    && _groupToNavMap.TryGetValue(group, out var navigation)
+                    && _groupToLandingMap.TryGetValue(group, out var retainedLanding)
+                    && navigation.TopViewController is { } top
+                    && !ReferenceEquals(top, retainedLanding)
+                    && !group.Items.Any(child => _contentToContainerMap.TryGetValue(child, out var container)
+                        && ReferenceEquals(container, top)))
+                {
+                    navigation.SetViewControllers(new UIViewController[] { retainedLanding }, false);
+                }
+            }
+            if (templateChanged || (group.LandingTemplate is null && (childrenChanged || identityChanged)))
+            {
+                if (_groupToNavMap.ContainsKey(group)) ReplaceLanding(group);
+            }
             if (!_groupToUITabGroupMap.TryGetValue(group, out var tabGroup))
             {
-                var children = new List<UITab>();
-                foreach (var child in group.Items)
-                {
-                    // 组内子页交给组自己的导航栈展示,不再各自包导航控制器,避免 nav 嵌套
-                    children.Add(GetOrCreateTab(child, wrapInNavigation: false));
-                }
-
                 var childTabs = children.ToArray();
 
                 tabGroup = new UITabGroup(
@@ -119,17 +285,28 @@ namespace AdaptiveShell.Platforms.MacIOS
 
                 // 组节点在任何 sidebar 里都不可点击(仅作可折叠分区标题);
                 // 落地页经组 tab(tab 模式)进入,与该开关无关。
-                // 注意:IsSidebarDestination 是 iOS 26 新增 API,iOS 18-25 上
-                // selector 不存在,直接赋值会 unrecognized selector 崩溃
-                if (tabGroup.RespondsToSelector(new ObjCRuntime.Selector("setIsSidebarDestination:")))
+                // IsSidebarDestination 从 iOS/Mac Catalyst 26.1 起可用。
+                // 同时检查系统版本与 selector，兼容旧系统和不同 UIKit 实现。
+                if ((OperatingSystem.IsIOSVersionAtLeast(26, 1)
+                        || OperatingSystem.IsMacCatalystVersionAtLeast(26, 1))
+                    && tabGroup.RespondsToSelector(new ObjCRuntime.Selector("setIsSidebarDestination:")))
                 {
                     tabGroup.IsSidebarDestination = false;
                 }
                 tabGroup.AccessibilityIdentifier = group.AutomationId ?? group.Title;
 
                 _groupToUITabGroupMap[group] = tabGroup;
-                LoadIconAsync(group, tabGroup);
+                RefreshIcon(group, tabGroup, force: true);
             }
+
+            _groupChildren[group] = group.Items.ToArray();
+            _groupChildTabs[group] = children.ToArray();
+            _landingTemplates[group] = group.LandingTemplate;
+            _landingIdentities[group] = identity;
+            tabGroup.Title = group.Title ?? "Group";
+            tabGroup.AccessibilityIdentifier = group.AutomationId ?? group.Title;
+            if (_groupToLandingMap.TryGetValue(group, out var landing)) landing.Title = group.Title;
+            RefreshIcon(group, tabGroup);
 
             return tabGroup;
         }
@@ -152,6 +329,7 @@ namespace AdaptiveShell.Platforms.MacIOS
 
             var container = new PageContainerViewController(controller);
             _groupToLandingMap[group] = container;
+            _landingPages[group] = landingPage;
             _landingContainers.Add(container);
 
             var navigation = new UINavigationController(container);
@@ -222,120 +400,108 @@ namespace AdaptiveShell.Platforms.MacIOS
 
         private Page CreateLandingPage(AShellGroup group)
         {
-            Page page;
-
-            if (group.LandingTemplate is not null)
+            var page = DefaultLandingPage.Create(group, child =>
             {
-                page = (Page)group.LandingTemplate.CreateContent();
-            }
-            else
-            {
-                var layout = new VerticalStackLayout
-                {
-                    Padding = new Thickness(20, 12),
-                    Spacing = 4,
-                };
-
-                foreach (var child in group.Items)
-                {
-                    layout.Add(CreateLandingRow(group, child));
-                }
-
-                page = new ContentPage
-                {
-                    Title = group.Title,
-                    Content = new ScrollView
-                    {
-                        AutomationId = $"landing-{group.AutomationId ?? group.Title}-body",
-                        Content = layout,
-                    },
-                };
-            }
-
-            // 挂到 AShell 逻辑树,保证资源/样式解析链连通
+                ShowGroupChild(group, child);
+                _virtualView.CurrentItem = child;
+            });
             _virtualView.AddLogicalChild(page);
-
             return page;
         }
 
-        private View CreateLandingRow(AShellGroup group, AShellContent child)
+        private void RemoveLanding(AShellGroup group)
         {
-            var row = new HorizontalStackLayout
+            if (_groupToLandingMap.Remove(group, out var container))
             {
-                Spacing = 14,
-                Padding = new Thickness(4, 12),
-                // 落地页行与子页 tab 区分定位,加 landing- 前缀
-                AutomationId = $"landing-{child.AutomationId ?? child.Title}",
-            };
-
-            var title = new Label
-            {
-                AutomationId = $"{row.AutomationId}-title",
-                Text = child.Title,
-                FontSize = 17,
-                VerticalOptions = LayoutOptions.Center,
-            };
-
-            if (child.Icon is not null)
-            {
-                var icon = new Image
-                {
-                    AutomationId = $"{row.AutomationId}-icon",
-                    Source = child.Icon,
-                    WidthRequest = 24,
-                    HeightRequest = 24,
-                    VerticalOptions = LayoutOptions.Center,
-                };
-                AutomationProperties.SetIsInAccessibleTree(icon, true);
-                icon.Behaviors.Add(new DefaultLandingIconTint(title));
-                row.Add(icon);
+                _landingContainers.Remove(container);
+                container.DetachContent();
+                container.Dispose();
             }
-
-            row.Add(title);
-
-            var tap = new TapGestureRecognizer();
-            tap.Tapped += (_, _) =>
+            if (_landingPages.Remove(group, out var page))
             {
-                // 直接推入组导航栈:不能只依赖 CurrentItem 变化,
-                // 否则再次点击当前已选中的子页时不会有任何反应
-                ShowGroupChild(group, child);
-                _virtualView.CurrentItem = child;
-            };
-            row.GestureRecognizers.Add(tap);
+                page.Handler?.DisconnectHandler();
+                _virtualView.RemoveLogicalChild(page);
+            }
+        }
 
-            return row;
+        private void ReplaceLanding(AShellGroup group)
+        {
+            if (!_groupToNavMap.TryGetValue(group, out var navigation)) return;
+            var oldLanding = _groupToLandingMap[group];
+            var page = CreateLandingPage(group);
+            var controller = page.ToUIViewController(_mauiContext);
+            controller.Title = group.Title;
+            var landing = new PageContainerViewController(controller);
+            var top = navigation.TopViewController;
+            bool keepChild = top is not null && !ReferenceEquals(top, oldLanding)
+                && group.Items.Any(child => _contentToContainerMap.TryGetValue(child, out var c)
+                    && ReferenceEquals(c, top));
+            navigation.SetViewControllers(keepChild
+                ? new UIViewController[] { landing, top! }
+                : new UIViewController[] { landing }, false);
+            RemoveLanding(group);
+            _groupToLandingMap[group] = landing;
+            _landingPages[group] = page;
+            _landingContainers.Add(landing);
+        }
+
+        private void RefreshIcon(AShellItem item, UITab tab, bool force = false)
+        {
+            if (!force && _iconSources.TryGetValue(item, out var oldSource)
+                && ReferenceEquals(oldSource, item.Icon)) return;
+            _iconSources[item] = item.Icon;
+            LoadIconAsync(item, tab);
         }
 
         private async void LoadIconAsync(AShellItem item, UITab tab)
         {
-            if (item.Icon is null)
+            var source = item.Icon;
+            int version = _iconVersions.TryGetValue(item, out var previous) ? previous + 1 : 1;
+            _iconVersions[item] = version;
+            if (source is null)
             {
+                tab.Image = item is AShellContent ? UIImage.GetSystemImage("doc.text") : null;
                 return;
             }
 
-            var result = await item.Icon.GetPlatformImageAsync(_mauiContext);
-            if (result?.Value is not UIImage image)
+            try
             {
-                return;
+                using var result = await source.GetPlatformImageAsync(_mauiContext);
+                if (result?.Value is not UIImage image) return;
+
+                bool stillCurrent = !_disconnected && ReferenceEquals(item.Icon, source)
+                    && _iconVersions.TryGetValue(item, out var latest) && latest == version
+                    && (item switch
+                    {
+                        AShellContent content =>
+                            _contentToUITabMap.TryGetValue(content, out var t) && ReferenceEquals(t, tab),
+                        AShellGroup group =>
+                            _groupToUITabGroupMap.TryGetValue(group, out var t) && ReferenceEquals(t, tab),
+                        _ => false,
+                    });
+
+                if (stillCurrent)
+                    tab.Image = image.ImageWithRenderingMode(UIImageRenderingMode.AlwaysTemplate);
             }
-
-            bool stillCurrent = item switch
+            catch (Exception)
             {
-                AShellContent content =>
-                    _contentToUITabMap.TryGetValue(content, out var t) && ReferenceEquals(t, tab),
-                AShellGroup group =>
-                    _groupToUITabGroupMap.TryGetValue(group, out var t) && ReferenceEquals(t, tab),
-                _ => false,
-            };
-
-            if (stillCurrent)
-            {
-                tab.Image = image.ImageWithRenderingMode(UIImageRenderingMode.AlwaysTemplate);
+                // Keep the native fallback if a file/stream image is unavailable.
             }
         }
 
         public void UpdateColors()
         {
+            if (_disconnected) return;
+            var view = View;
+            if (view is null) return;
+
+            if (!_colorsCaptured)
+            {
+                _defaultTabTint = TabBar.TintColor;
+                _defaultViewTint = view.TintColor;
+                _defaultUnselectedTint = TabBar.UnselectedItemTintColor;
+                _colorsCaptured = true;
+            }
             var selected = _virtualView.GetEffectiveSelectedItemColor();
             if (selected is not null)
             {
@@ -346,7 +512,12 @@ namespace AdaptiveShell.Platforms.MacIOS
 
                 // sidebar(Mac/iPad):选中行由系统渲染,tint 决定其色调;
                 // 选中行背景样式 Apple 不提供定制 API
-                View.TintColor = tintColor;
+                view.TintColor = tintColor;
+            }
+            else
+            {
+                TabBar.TintColor = _defaultTabTint;
+                view.TintColor = _defaultViewTint;
             }
 
             var unselected = _virtualView.GetEffectiveUnselectedItemColor();
@@ -354,19 +525,35 @@ namespace AdaptiveShell.Platforms.MacIOS
             {
                 TabBar.UnselectedItemTintColor = unselected.ToPlatform();
             }
+            else TabBar.UnselectedItemTintColor = _defaultUnselectedTint;
         }
 
-        public void UpdateCurrentItem()
+        public void UpdateCurrentItem(bool preserveLanding = false)
         {
             var currentItem = _virtualView.CurrentItem;
+            if (currentItem is null)
+            {
+                SelectedTab = null;
+                _lastCurrentItem = null;
+                return;
+            }
             if (currentItem is AShellContent content)
             {
+                bool sameSelection = ReferenceEquals(content, _lastCurrentItem);
+                _lastCurrentItem = content;
+                var group = FindGroupOf(content);
+                if (preserveLanding && sameSelection && _landingGroupBeforeItems is { } landingGroup
+                    && _groupToUITabGroupMap.TryGetValue(landingGroup, out var landingTab))
+                {
+                    SelectedTab = landingTab;
+                    return;
+                }
                 if (_contentToUITabMap.TryGetValue(content, out var tab))
                 {
                     SelectedTab = tab;
                 }
+                else return;
 
-                var group = FindGroupOf(content);
                 if (group is not null)
                 {
                     ShowGroupChild(group, content);
@@ -378,6 +565,7 @@ namespace AdaptiveShell.Platforms.MacIOS
         // tab 模式下点到组 tab 时回到落地页(sidebar 里组节点不可点击,不会走到这)
         private void HandleTabSelected(UITab selectedTab)
         {
+            if (_disconnected || _virtualView.IsUpdatingItems) return;
             foreach (var pair in _contentToUITabMap)
             {
                 if (ReferenceEquals(pair.Value, selectedTab))
@@ -445,13 +633,17 @@ namespace AdaptiveShell.Platforms.MacIOS
         // 默认页面容器收缩避让悬浮导航栏,FullBleed 的页面容器铺满
         private void UpdateContentContainers()
         {
+            if (_disconnected) return;
+            var view = View;
+            if (view is null) return;
+
             var insets = UIEdgeInsets.Zero;
 
             if (TabBar is not null && !TabBar.Hidden && !TabBar.Frame.IsEmpty
                 && TabBar.Superview is not null)
             {
-                var frameInView = View.ConvertRectFromView(TabBar.Frame, TabBar.Superview);
-                var bounds = View.Bounds;
+                var frameInView = view.ConvertRectFromView(TabBar.Frame, TabBar.Superview);
+                var bounds = view.Bounds;
 
                 double bLeft = (double)bounds.Left, bTop = (double)bounds.Top;
                 double bRight = (double)bounds.Right, bBottom = (double)bounds.Bottom;
@@ -522,12 +714,23 @@ namespace AdaptiveShell.Platforms.MacIOS
         private sealed class PageContainerViewController : UIViewController
         {
             readonly UIViewController _content;
+            bool _detached;
 
             UIEdgeInsets _contentInsets;
 
             public PageContainerViewController(UIViewController content)
             {
                 _content = content;
+            }
+
+            public void DetachContent()
+            {
+                if (_detached) return;
+                _detached = true;
+                if (!ReferenceEquals(_content.ParentViewController, this)) return;
+                _content.WillMoveToParentViewController(null);
+                if (_content.IsViewLoaded) _content.View?.RemoveFromSuperview();
+                _content.RemoveFromParentViewController();
             }
 
             public UIEdgeInsets ContentInsets
@@ -545,8 +748,15 @@ namespace AdaptiveShell.Platforms.MacIOS
             {
                 base.ViewDidLoad();
 
+                if (_detached) return;
+
+                var rootView = View
+                    ?? throw new InvalidOperationException("The page container view is unavailable.");
+                var contentView = _content.View
+                    ?? throw new InvalidOperationException("The content view is unavailable.");
+
                 AddChildViewController(_content);
-                View.AddSubview(_content.View);
+                rootView.AddSubview(contentView);
                 _content.DidMoveToParentViewController(this);
             }
 
@@ -554,7 +764,10 @@ namespace AdaptiveShell.Platforms.MacIOS
             {
                 base.ViewDidLayoutSubviews();
 
-                var bounds = View.Bounds;
+                if (_detached || View is not { } rootView || _content.View is not { } contentView)
+                    return;
+
+                var bounds = rootView.Bounds;
                 var x = (double)bounds.X + (double)_contentInsets.Left;
                 var y = (double)bounds.Y + (double)_contentInsets.Top;
                 var width = Math.Max(0,
@@ -569,7 +782,7 @@ namespace AdaptiveShell.Platforms.MacIOS
                     return;
                 }
 
-                _content.View.Frame = new CoreGraphics.CGRect(x, y, width, height);
+                contentView.Frame = new CoreGraphics.CGRect(x, y, width, height);
             }
         }
 

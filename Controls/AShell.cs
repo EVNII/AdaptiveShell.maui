@@ -1,15 +1,19 @@
-using Microsoft.Maui.Controls.PlatformConfiguration.AndroidSpecific;
-using System;
-using System.Collections.Generic;
+using System.ComponentModel;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
-using System.Linq;
 
 namespace AdaptiveShell.Controls
 {
     [ContentProperty(nameof(Items))]
     public class AShell : Page, IAShellController
     {
+        readonly HashSet<AShellItem> _observedItems = new();
+        readonly HashSet<AShellGroup> _observedGroups = new();
+        bool _itemsUpdatePending;
+        bool _normalizeSelectionPending;
+
+        internal bool IsUpdatingItems { get; private set; }
+
         static readonly BindablePropertyKey ItemsPropertyKey =
             BindableProperty.CreateReadOnly(
                 nameof(Items),
@@ -21,16 +25,7 @@ namespace AdaptiveShell.Controls
                     var shell = (AShell)bo;
                     var items = new AShellItemCollection<AShellItem>(shell);
 
-                    items.CollectionChanged += (sender, e) =>
-                    {
-                        if(e.Action is NotifyCollectionChangedAction.Add)
-                        {
-                            if(shell.CurrentItem is null && e.NewItems != null && e.NewItems.Count > 0)
-                            {
-                                shell.CurrentItem = FirstLeaf((AShellItem)e.NewItems[0]!);
-                            }
-                        }
-                    };
+                    items.CollectionChanged += shell.OnItemsCollectionChanged;
 
                     return items;
                 }
@@ -90,6 +85,84 @@ namespace AdaptiveShell.Controls
 
         internal Color? GetEffectiveUnselectedItemColor() =>
             UnselectedItemColor;
+
+        void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => RefreshItems(normalizeSelection: true);
+
+        void OnItemPropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(e.PropertyName)
+                || e.PropertyName is nameof(AShellItem.Title) or nameof(AShellItem.Icon)
+                    or nameof(AShellItem.AutomationId) or nameof(AShellContent.ContentTemplate)
+                    or nameof(AShellContent._page) or nameof(AShellGroup.LandingTemplate))
+            {
+                RefreshItems(normalizeSelection: false);
+            }
+        }
+
+        void RefreshItems(bool normalizeSelection)
+        {
+            _normalizeSelectionPending |= normalizeSelection;
+            if (IsUpdatingItems)
+            {
+                _itemsUpdatePending = true;
+                return;
+            }
+
+            do
+            {
+                _itemsUpdatePending = false;
+                bool updateSelection = _normalizeSelectionPending;
+                _normalizeSelectionPending = false;
+                IsUpdatingItems = true;
+                try
+                {
+                    UpdateSubscriptions();
+                    var contents = Items.SelectMany(item => item is AShellGroup group
+                        ? group.Items.AsEnumerable()
+                        : item is AShellContent content ? new[] { content } : Enumerable.Empty<AShellContent>());
+                    if (updateSelection && (CurrentItem is null || !contents.Contains(CurrentItem)))
+                    {
+                        CurrentItem = contents.FirstOrDefault();
+                    }
+
+                    // The Items instance stays stable. Explicitly notify the mapper only after
+                    // logical ownership and selection have been brought into agreement.
+                    OnPropertyChanged(nameof(Items));
+                }
+                finally
+                {
+                    IsUpdatingItems = false;
+                }
+            }
+            while (_itemsUpdatePending);
+        }
+
+        void UpdateSubscriptions()
+        {
+            var groups = Items.OfType<AShellGroup>().ToHashSet();
+            var items = Items.Concat(groups.SelectMany(group => group.Items)).ToHashSet();
+
+            foreach (var removed in _observedGroups.Except(groups).ToArray())
+            {
+                removed.Items.CollectionChanged -= OnItemsCollectionChanged;
+                _observedGroups.Remove(removed);
+            }
+            foreach (var added in groups.Except(_observedGroups).ToArray())
+            {
+                added.Items.CollectionChanged += OnItemsCollectionChanged;
+                _observedGroups.Add(added);
+            }
+            foreach (var removed in _observedItems.Except(items).ToArray())
+            {
+                removed.PropertyChanged -= OnItemPropertyChanged;
+                _observedItems.Remove(removed);
+            }
+            foreach (var added in items.Except(_observedItems).ToArray())
+            {
+                added.PropertyChanged += OnItemPropertyChanged;
+                _observedItems.Add(added);
+            }
+        }
 
         internal static AShellContent? FirstLeaf(AShellItem item) =>
             item switch

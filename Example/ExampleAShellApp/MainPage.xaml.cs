@@ -7,7 +7,12 @@
         public MainPage()
         {
             InitializeComponent();
+        }
 
+        protected MainPage(string identity) : this()
+        {
+            PageIdentityLabel.Text = identity;
+            PageIdentityLabel.AutomationId = $"page-{identity.ToLowerInvariant()}";
         }
 
         private void OnCounterClicked(object? sender, EventArgs e)

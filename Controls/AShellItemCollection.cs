@@ -2,7 +2,7 @@ using System.Collections.ObjectModel;
 
 namespace AdaptiveShell.Controls
 {
-    internal class AShellItemCollection<T> : ObservableCollection<T> where T : Element
+    internal sealed class AShellItemCollection<T> : ObservableCollection<T> where T : AShellItem
     {
         readonly Element _owner;
 
@@ -13,32 +13,53 @@ namespace AdaptiveShell.Controls
 
         protected override void InsertItem(int index, T item)
         {
-            base.InsertItem(index, item);
+            CheckReentrancy();
+            ArgumentOutOfRangeException.ThrowIfNegative(index);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(index, Count);
+            ValidateItem(item);
             _owner.AddLogicalChild(item);
+            base.InsertItem(index, item);
         }
 
         protected override void RemoveItem(int index)
         {
             var item = this[index];
-            base.RemoveItem(index);
+            CheckReentrancy();
             _owner.RemoveLogicalChild(item);
+            base.RemoveItem(index);
         }
 
         protected override void SetItem(int index, T item)
         {
             var oldItem = this[index];
-            base.SetItem(index, item);
+            CheckReentrancy();
+            if (ReferenceEquals(oldItem, item))
+            {
+                return;
+            }
+            ValidateItem(item);
             _owner.RemoveLogicalChild(oldItem);
             _owner.AddLogicalChild(item);
+            base.SetItem(index, item);
         }
 
         protected override void ClearItems()
         {
-            foreach (var item in this)
+            CheckReentrancy();
+            foreach (var item in this.ToArray())
             {
                 _owner.RemoveLogicalChild(item);
             }
             base.ClearItems();
+        }
+
+        void ValidateItem(T item)
+        {
+            ArgumentNullException.ThrowIfNull(item);
+            if (Contains(item) || item.Parent is not null)
+            {
+                throw new InvalidOperationException("Remove the navigation item from its current collection before adding it to another location.");
+            }
         }
     }
 }

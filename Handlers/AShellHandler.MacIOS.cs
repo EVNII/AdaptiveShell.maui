@@ -1,9 +1,5 @@
 using AdaptiveShell.Controls;
-using Microsoft.Maui.Controls.PlatformConfiguration;
 using Microsoft.Maui.Handlers;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 using AdaptiveShell.Platforms.MacIOS;
 
@@ -11,33 +7,32 @@ namespace AdaptiveShell.Handlers
 {
     public partial class AShellHandler : ViewHandler<AShell, UIKit.UIView>
     {
-        private AShellView _platformViewController;
+        private AShellView? _platformViewController;
         protected override UIKit.UIView CreatePlatformView()
         {
-            _platformViewController = new AShellView(VirtualView, MauiContext);
+            _platformViewController = new AShellView(VirtualView,
+                MauiContext ?? throw new InvalidOperationException("MAUI context is required for AShell."));
 
             ViewController = _platformViewController;
-            return _platformViewController.View;
+            return _platformViewController.View
+                ?? throw new InvalidOperationException("AShell native view is unavailable.");
         }
-        protected override void ConnectHandler(UIKit.UIView platformView)
-        {
-            base.ConnectHandler(platformView);
-            // Perform any control setup here
-        }
-
         protected override void DisconnectHandler(UIKit.UIView platformView)
         {
+            _platformViewController?.Disconnect();
+            _platformViewController = null;
             base.DisconnectHandler(platformView);
         }
 
         public static void MapItems(AShellHandler handler, AShell shell)
         {
             handler._platformViewController?.UpdateItems();
-            handler._platformViewController?.UpdateCurrentItem();
+            handler._platformViewController?.UpdateCurrentItem(preserveLanding: true);
         }
 
         public static void MapCurrentItem(AShellHandler handler, AShell shell)
         {
+            if (shell.IsUpdatingItems) return;
             handler._platformViewController?.UpdateCurrentItem();
         }
 
