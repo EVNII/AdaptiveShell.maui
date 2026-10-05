@@ -23,8 +23,6 @@ internal static class IosLandingScreenshotProvider
         }
         if (!OperatingSystem.IsMacOS() || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true"
             || Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT") != "github-hosted"
-            || Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") != "EVNII/AdaptiveShell.maui"
-            || Environment.GetEnvironmentVariable("GITHUB_JOB") is not ("uitest-ios" or "uitest-ios-18")
             || TestContext.CurrentContext.Test.FullName != "AdaptiveShell.UITests.LandingPageDarkModeTests.DarkMode_GroupLandingPage")
             throw new InvalidOperationException("The iOS 18 landing provider requires this test's owned hosted simulator.");
         var udid = Capability("udid");
@@ -32,11 +30,15 @@ internal static class IosLandingScreenshotProvider
             throw new InvalidOperationException("The actual Appium session must identify the owned simulator UDID.");
         var workflowRef = Environment.GetEnvironmentVariable("GITHUB_WORKFLOW_REF") ?? "";
         var workflowPath = workflowRef.Split('@')[0];
-        const string repositoryPrefix = "EVNII/AdaptiveShell.maui/";
-        if (!workflowPath.StartsWith(repositoryPrefix, StringComparison.Ordinal))
+        var repository = Environment.GetEnvironmentVariable("GITHUB_REPOSITORY");
+        var job = Environment.GetEnvironmentVariable("GITHUB_JOB");
+        if (repository is null || !workflowPath.StartsWith(repository + "/", StringComparison.Ordinal))
             throw new InvalidOperationException("An exact repository workflow identity is required.");
-        workflowPath = workflowPath[repositoryPrefix.Length..];
-        if (workflowPath is not (".github/workflows/uitest.yml" or ".github/workflows/release-uitest.yml"))
+        workflowPath = workflowPath[(repository.Length + 1)..];
+        bool ownedWorkflow = (repository is "EVNII/AdaptiveShell" or "EVNII/AdaptiveShell.maui")
+            && (workflowPath == ".github/workflows/uitest.yml" && job == "uitest-ios"
+                || workflowPath == ".github/workflows/release-uitest.yml" && job == "uitest-ios-18");
+        if (!ownedWorkflow)
             throw new InvalidOperationException("An existing registered UI workflow is required.");
         var root = AppiumSetup.RepoRoot;
         var results = Path.Combine(root, "TestResults");
@@ -66,7 +68,8 @@ internal static class IosLandingScreenshotProvider
             window_size = new { width = size.Width, height = size.Height }, active_app = active,
             run_id = Environment.GetEnvironmentVariable("GITHUB_RUN_ID"),
             run_attempt = Environment.GetEnvironmentVariable("GITHUB_RUN_ATTEMPT"),
-            head_sha = Environment.GetEnvironmentVariable("GITHUB_SHA"), workflow_path = workflowPath,
+            head_sha = Environment.GetEnvironmentVariable("GITHUB_SHA"), repository, job,
+            workflow_path = workflowPath,
             workflow_ref = workflowRef, workflow_sha256 = Hash(Path.Combine(root, workflowPath)),
             assembly_path = typeof(IosLandingScreenshotProvider).Assembly.Location,
             assembly_sha256 = Hash(typeof(IosLandingScreenshotProvider).Assembly.Location),

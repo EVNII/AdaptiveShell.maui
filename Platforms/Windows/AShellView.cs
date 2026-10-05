@@ -1,6 +1,7 @@
 using AdaptiveShell.Controls;
 using Microsoft.Maui.Platform;
 using Microsoft.UI.Xaml.Controls;
+using Page = Microsoft.Maui.Controls.Page;
 
 namespace AdaptiveShell.Platforms.Windows
 {

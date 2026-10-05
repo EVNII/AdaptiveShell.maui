@@ -13,6 +13,12 @@ CAPTURES={40:'landing-theme-light',41:'landing-theme-dark',42:'landing-theme-lig
           43:'landing-dark-music-child-clicked',44:'landing-dark-music-returned',
           45:'landing-dark-photos-child-clicked',46:'landing-dark-photos-returned'}
 BUNDLE='com.companyname.exampleashellapp'
+OWNED_WORKFLOWS={
+    (repository,workflow,job)
+    for repository in ('EVNII/AdaptiveShell','EVNII/AdaptiveShell.maui')
+    for workflow,job in (('.github/workflows/uitest.yml','uitest-ios'),
+                         ('.github/workflows/release-uitest.yml','uitest-ios-18'))
+}
 def require(value,message):
     if not value:raise ValueError(message)
 def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -77,8 +83,11 @@ def main(request_path):
         raw=native(['curl','--fail','--silent','--show-error','--max-time',str(remaining()),url],label)
         require(len(raw)<=2*1024*1024,'Unexpectedly large native response');return json.loads(raw)
     try:
-        scope={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','GITHUB_REPOSITORY':'EVNII/AdaptiveShell.maui','UITEST_PLATFORM':'ios','UITEST_FORM':'compact'}
-        require(sys.platform=='darwin' and all(os.environ.get(k)==v for k,v in scope.items()) and os.environ.get('GITHUB_JOB') in ('uitest-ios','uitest-ios-18'),'Provider is restricted to the owned hosted iOS18 job')
+        scope={'GITHUB_ACTIONS':'true','RUNNER_ENVIRONMENT':'github-hosted','UITEST_PLATFORM':'ios','UITEST_FORM':'compact'}
+        require(sys.platform=='darwin' and all(os.environ.get(k)==v for k,v in scope.items()),'Provider is restricted to the owned hosted iOS18 job')
+        require((request.get('repository'),request.get('workflow_path'),request.get('job')) in OWNED_WORKFLOWS
+            and request['repository']==os.environ.get('GITHUB_REPOSITORY')
+            and request['job']==os.environ.get('GITHUB_JOB'),'Provider is restricted to an owned repository workflow and job')
         require(Path(os.environ['GITHUB_WORKSPACE']).resolve()==ROOT,'The exact checked-out workspace is required')
         for field,key in [('run_id','GITHUB_RUN_ID'),('run_attempt','GITHUB_RUN_ATTEMPT'),('head_sha','GITHUB_SHA'),('actual_udid','UITEST_DEVICE_UDID'),('workflow_ref','GITHUB_WORKFLOW_REF')]:
             require(request.get(field)==os.environ.get(key) and request.get(field),'Actual session/source identity mismatch: '+field)
@@ -86,7 +95,7 @@ def main(request_path):
         require(re.fullmatch(r'[0-9A-Fa-f-]{36}',request['actual_udid']) and re.fullmatch(r'[0-9A-Fa-f-]{36}',request['appium_session_id']),'Malformed actual session identity')
         require(request['test_full_name']=='AdaptiveShell.UITests.LandingPageDarkModeTests.DarkMode_GroupLandingPage','Original landing test only')
         require(request['active_app'].get('bundleId')==BUNDLE,'The tested sample must be the real active native application')
-        require(request['workflow_path'] in ('.github/workflows/uitest.yml','.github/workflows/release-uitest.yml') and request['workflow_ref'].split('@')[0]=='EVNII/AdaptiveShell.maui/'+request['workflow_path'],'Exact registered workflow required')
+        require(request['workflow_ref'].split('@')[0]==request['repository']+'/'+request['workflow_path'],'Exact registered workflow required')
         require(digest(ROOT/request['workflow_path'])==request['workflow_sha256'],'Workflow bytes changed')
         assembly=Path(request['assembly_path']).resolve();require(assembly.is_relative_to(ROOT/'Tests/AdaptiveShell.UITests/bin') and digest(assembly)==request['assembly_sha256'],'Actual test assembly changed')
         primary=RESULTS/f'shots/ios-compact/{sequence:02d}-{label}.png';comparison=Path(str(prefix)+'-wda.png')
@@ -141,7 +150,9 @@ def verify_saved_capture(root,sequence,label,identity,png):
     require(version(request['actual_platform_version'])==version(identity['actual_platform_version']) and version(request['actual_platform_version'])[0]==18,'Wrong actual iOS18 runtime')
     require(request['active_app'].get('bundleId')==BUNDLE and request['test_full_name']=='AdaptiveShell.UITests.LandingPageDarkModeTests.DarkMode_GroupLandingPage','Wrong native application or original test')
     require(proof.get('capture_script_sha256')==digest(Path(__file__)) and proof.get('PNG_reader_sha256')==digest(Path(__file__).with_name('verify_mac_button_colors.py')),'Actual provider/parser source hash differs')
-    require(request['workflow_path'] in ('.github/workflows/uitest.yml','.github/workflows/release-uitest.yml') and digest(ROOT/request['workflow_path'])==request['workflow_sha256'],'Actual workflow source hash differs')
+    require((request.get('repository'),request.get('workflow_path'),request.get('job')) in OWNED_WORKFLOWS
+        and request['workflow_ref'].split('@')[0]==request['repository']+'/'+request['workflow_path']
+        and digest(ROOT/request['workflow_path'])==request['workflow_sha256'],'Actual workflow source identity or hash differs')
     def file(relative):
         q=Path(relative);require(not q.is_absolute() and '..' not in q.parts,'Unsafe original evidence path');path=results/q
         require(path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(results.resolve()),'Missing or unsafe original provider evidence');return path
