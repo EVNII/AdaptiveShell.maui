@@ -52,6 +52,13 @@ public class NavigationTests : BaseTest
         Driver.WaitForAccessibilityId("home");
         Driver.WaitForAccessibilityId("home2");
         Driver.WaitForAccessibilityId("media");
+        if (AppiumSetup.Platform == "android" && AppiumSetup.Form == "compact")
+        {
+            var viewport = Driver.WaitFor(By.XPath(
+                "//android.widget.HorizontalScrollView[@content-desc='Main navigation']"));
+            Assert.That(viewport.GetAttribute("scrollable"), Is.EqualTo("false"),
+                "The ordinary sample fits the bottom viewport and should not require scrolling.");
+        }
     }
 
     [Test]

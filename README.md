@@ -64,6 +64,8 @@ Derive your app shell from `AShell` and declare navigation items in XAML:
 
 See `Example/ExampleAShellApp` for a full sample.
 
+On Android, window width determines the navigation layout. The navigation rail and group drawer scroll vertically when their content exceeds the available height. In compact windows, bottom navigation measures its items and scrolls horizontally when their required width exceeds the viewport. Fitting content stays still; changing the number of items does not switch navigation layouts.
+
 ## Accessibility
 
 `AShellItem.AutomationId` (falling back to `Title`) is projected onto the native navigation views on every platform — `accessibilityIdentifier` on iOS/Mac Catalyst, `content-desc` on Android, `AutomationProperties.AutomationId` on Windows — so navigation items have stable identifiers for assistive technologies and UI tests. Group landing-page rows are exposed as `landing-<id>`.
@@ -92,6 +94,15 @@ Tests/AdaptiveShell.UITests/run-uitest.ps1
 ```
 
 Configuration via environment variables: `UITEST_PLATFORM`, `UITEST_FORM` (`compact`|`wide`|`duo`), `UITEST_APP_PATH`, `UITEST_DEVICE_NAME`, `UITEST_DEVICE_UDID`, `UITEST_APPIUM_URL`.
+
+Android overflow coverage uses an opt-in example with 12 top-level items and 18 group children. With Appium running and an Android emulator with a short window height, build and run:
+
+```bash
+dotnet build Example/ExampleAShellApp/ExampleAShellApp.csproj -f net10.0-android -p:TargetFrameworks=net10.0-android -p:EmbedAssembliesIntoApk=true -p:NavigationOverflowSample=true
+UITEST_PLATFORM=android UITEST_FORM=wide UITEST_NAVIGATION_OVERFLOW=1 dotnet test Tests/AdaptiveShell.UITests/AdaptiveShell.UITests.csproj --filter FullyQualifiedName~AndroidNavigationScrollTests
+```
+
+Run the same fixture with `UITEST_FORM=compact` to verify horizontal overflow while retaining bottom navigation, or use a taller wide window to verify the content fits without scrolling. Rebuild the example without `NavigationOverflowSample=true` before running the ordinary suite.
 
 `DarkModeTests` additionally switches the system appearance (adb `uimode`, `simctl ui appearance`, Windows registry theme) and verifies the shell stays functional in dark mode; screenshots from both themes land in the report.
 Android also reads back native night mode; the locked API29 CI image uses an explicitly enabled privileged emulator shell for the same system service command.

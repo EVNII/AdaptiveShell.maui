@@ -9,7 +9,6 @@ using Android.Widget;
 using AndroidX.Core.Graphics;
 using AndroidX.Core.View;
 using Google.Android.Material.AppBar;
-using Google.Android.Material.BottomNavigation;
 using Google.Android.Material.Navigation;
 using Google.Android.Material.NavigationRail;
 using Microsoft.Maui.Platform;
@@ -17,12 +16,13 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using ImageButton = Android.Widget.ImageButton;
+using ScrollView = Android.Widget.ScrollView;
 
 namespace AdaptiveShell.Platforms.Android
 {
     public partial class AShellView : IDisposable
     {
-        // Material 3 window size class: 紧凑宽度(<600dp)使用底部导航栏,否则使用侧边 NavigationRail
+        // Material 窗口尺寸分类决定导航形态;内容超出视口时由滚动容器处理。
         const int CompactWidthBreakpointDp = 600;
 
         readonly Context _context;
@@ -38,6 +38,7 @@ namespace AdaptiveShell.Platforms.Android
         global::Android.Views.View _drawerScrim;
         FrameLayout _contentFrameLayout;
         NavigationBarView _navigationView = null!; // Created by RebuildNavigation in the constructor.
+        HorizontalScrollView? _bottomNavigationScroll;
         FrameLayout? _navHeaderFrameLayout;
         ValueAnimator? _menuAnimator;
         bool _isBottomBar;
@@ -380,29 +381,45 @@ namespace AdaptiveShell.Platforms.Android
                 return;
             _overlayLayout.Post(_windowAppearance.UpdateNavigationBarAppearance);
             var widthDp = (int)((e.Right - e.Left) / _density);
-            var useBottomBar = widthDp < CompactWidthBreakpointDp;
+            var useBottomBar = ShouldUseBottomBar(widthDp);
             if (useBottomBar != _isBottomBar)
             {
                 RebuildNavigation(widthDp);
             }
+            else if (_drawerPanel.Visibility == ViewStates.Visible)
+            {
+                UpdateDrawerAnchor();
+            }
+            else if (_isBottomBar)
+            {
+                EnsureBottomSelectionVisible();
+            }
         }
+
+        private bool ShouldUseBottomBar(int widthDp) =>
+            widthDp < CompactWidthBreakpointDp;
 
         private void RebuildNavigation(int? widthDp = null)
         {
             if (_navigationView != null)
             {
                 _navigationView.ItemSelected -= OnPlatformViewItemInvoked;
+                _navigationView.LayoutChange -= OnRailLayoutChange;
+                _navigationView.LayoutChange -= OnBottomNavigationLayoutChange;
                 DisposeMenuAnimator();
                 _navHeaderFrameLayout?.Dispose();
                 _navHeaderFrameLayout = null;
                 _navigationView.Dispose();
+                _bottomNavigationScroll?.RemoveAllViews();
+                _bottomNavigationScroll?.Dispose();
+                _bottomNavigationScroll = null;
             }
 
             CloseDrawer();
             _linearLayout.RemoveAllViews();
 
-            _isBottomBar =
-                (widthDp ?? _context.Resources!.Configuration!.ScreenWidthDp) < CompactWidthBreakpointDp;
+            _isBottomBar = ShouldUseBottomBar(
+                widthDp ?? _context.Resources!.Configuration!.ScreenWidthDp);
 
             if (_isBottomBar)
             {
@@ -411,14 +428,25 @@ namespace AdaptiveShell.Platforms.Android
                     ViewGroup.LayoutParams.MatchParent,
                     0,
                     1.0f);
-                _navigationView = new BottomNavigationView(_context)
+                _navigationView = new ResponsiveBottomNavigationView(_context)
+                {
+                    LayoutParameters = new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WrapContent,
+                        ViewGroup.LayoutParams.WrapContent),
+                };
+                _bottomNavigationScroll = new HorizontalScrollView(_context)
                 {
                     LayoutParameters = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MatchParent,
                         ViewGroup.LayoutParams.WrapContent),
+                    FillViewport = true,
+                    HorizontalScrollBarEnabled = false,
+                    ContentDescription = "Main navigation",
                 };
+                _bottomNavigationScroll.AddView(_navigationView);
+                _navigationView.LayoutChange += OnBottomNavigationLayoutChange;
                 _linearLayout.AddView(_contentColumnLayout);
-                _linearLayout.AddView(_navigationView);
+                _linearLayout.AddView(_bottomNavigationScroll);
             }
             else
             {
@@ -427,13 +455,16 @@ namespace AdaptiveShell.Platforms.Android
                     0,
                     ViewGroup.LayoutParams.MatchParent,
                     1.0f);
-                var rail = new NavigationRailView(_context)
-                {
-                    LayoutParameters = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WrapContent,
-                        ViewGroup.LayoutParams.MatchParent),
-                    MenuGravity = ((int)GravityFlags.Center),
-                };
+                // scrollingEnabled 只能在构造时通过 XML 属性开启,保留主题默认样式。
+                var rail = (NavigationRailView)LayoutInflater.From(_context)!.Inflate(
+                    Resource.Layout.adaptive_shell_navigation_rail, _linearLayout, false)!;
+                rail.MenuGravity = (int)GravityFlags.Center;
+                // Material 默认在收起状态隐藏第 8 项起的条目;滚动时应全部可达。
+#pragma warning disable XAOBS001 // Pinned Material 1.14 exposes this only on its menu view.
+                ((NavigationBarMenuView)rail.MenuViewGroup).SetCollapsedMaxItemCount(int.MaxValue);
+#pragma warning restore XAOBS001
+                if (rail.GetChildAt(0) is ScrollView railScroll)
+                    railScroll.ContentDescription = "Main navigation";
                 rail.ItemActiveIndicatorExpandedWidth =
                     NavigationBarView.ActiveIndicatorWidthMatchParent;
                 rail.AddHeaderView(CreateNavHeader());
@@ -672,9 +703,17 @@ namespace AdaptiveShell.Platforms.Android
                 list.AddView(row);
             }
 
-            _drawerPanel.AddView(list, new FrameLayout.LayoutParams(
+            var scroll = new ScrollView(_context)
+            {
+                FillViewport = true,
+                ContentDescription = "Navigation group items",
+            };
+            scroll.AddView(list, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MatchParent,
                 ViewGroup.LayoutParams.WrapContent));
+            _drawerPanel.AddView(scroll, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MatchParent,
+                ViewGroup.LayoutParams.MatchParent));
         }
 
         private async void LoadRowIconAsync(AShellContent item, ImageView iconView)
@@ -707,15 +746,39 @@ namespace AdaptiveShell.Platforms.Android
             }
         }
 
+        private void OnBottomNavigationLayoutChange(object? sender, global::Android.Views.View.LayoutChangeEventArgs e)
+        {
+            EnsureBottomSelectionVisible();
+        }
+
+        private void EnsureBottomSelectionVisible()
+        {
+            _bottomNavigationScroll?.Post(() =>
+            {
+                if (_disposed || !_isBottomBar)
+                    return;
+                if (_navigationView.FindViewById(_navigationView.SelectedItemId) is { } selected)
+                {
+                    using var bounds = new global::Android.Graphics.Rect(0, 0, selected.Width, selected.Height);
+                    selected.RequestRectangleOnScreen(bounds, true);
+                }
+            });
+        }
+
         // 抽屉/遮罩贴齐 rail 右缘
         private void UpdateDrawerAnchor()
         {
             int railWidth = _navigationView.Width > 0 ? _navigationView.Width : Dp(80);
 
             var panelParameters = (FrameLayout.LayoutParams)_drawerPanel.LayoutParameters!;
-            if (panelParameters.MarginStart != railWidth)
+            int availableWidth = _overlayLayout.Width > 0
+                ? Math.Max(0, _overlayLayout.Width - railWidth)
+                : Dp(360);
+            int panelWidth = Math.Min(Dp(360), availableWidth);
+            if (panelParameters.MarginStart != railWidth || panelParameters.Width != panelWidth)
             {
                 panelParameters.MarginStart = railWidth;
+                panelParameters.Width = panelWidth;
                 _drawerPanel.LayoutParameters = panelParameters;
             }
 
@@ -807,10 +870,14 @@ namespace AdaptiveShell.Platforms.Android
         private void SelectMenuItem(int itemId)
         {
             if (_navigationView.SelectedItemId == itemId)
+            {
+                EnsureBottomSelectionVisible();
                 return;
+            }
             _updatingNativeSelection = true;
             try { _navigationView.SelectedItemId = itemId; }
             finally { _updatingNativeSelection = false; }
+            EnsureBottomSelectionVisible();
         }
 
         // 设置/清除导航图标时 toolbar 会重建导航按钮视图,
@@ -865,6 +932,8 @@ namespace AdaptiveShell.Platforms.Android
             if (_navigationView != null)
             {
                 _navigationView.ItemSelected -= OnPlatformViewItemInvoked;
+                _navigationView.LayoutChange -= OnRailLayoutChange;
+                _navigationView.LayoutChange -= OnBottomNavigationLayoutChange;
             }
 
             DisposeMenuAnimator();
@@ -872,6 +941,7 @@ namespace AdaptiveShell.Platforms.Android
             _backCallback?.Remove();
             ClearCachedViews();
             _navigationView?.Dispose();
+            _bottomNavigationScroll?.Dispose();
             _navHeaderFrameLayout?.Dispose();
             _toolbar?.Dispose();
             _drawerPanel?.Dispose();
@@ -1028,6 +1098,7 @@ namespace AdaptiveShell.Platforms.Android
             // 的 AppThemeBinding 处理,这里不重建也不改动页面/导航状态。
             _navigationView.BackgroundTintList = ColorStateList.ValueOf(
                 new global::Android.Graphics.Color(container));
+            _bottomNavigationScroll?.SetBackgroundColor(new global::Android.Graphics.Color(container));
             _toolbar.BackgroundTintList = ColorStateList.ValueOf(
                 new global::Android.Graphics.Color(
                     ResolveThemeColor(_context, container, "colorSurface")));
@@ -1045,7 +1116,8 @@ namespace AdaptiveShell.Platforms.Android
                     new global::Android.Graphics.Color(onSurface));
             }
 
-            if (_drawerPanel.GetChildAt(0) is LinearLayout drawerList)
+            if (_drawerPanel.GetChildAt(0) is ScrollView drawerScroll
+                && drawerScroll.GetChildAt(0) is LinearLayout drawerList)
             {
                 for (int i = 0; i < drawerList.ChildCount; i++)
                 {
@@ -1187,8 +1259,7 @@ namespace AdaptiveShell.Platforms.Android
                 selectedMenuItem = groupItem;
             }
 
-            if (selectedMenuItem is not null
-                && _navigationView.SelectedItemId != selectedMenuItem.ItemId)
+            if (selectedMenuItem is not null)
             {
                 SelectMenuItem(selectedMenuItem.ItemId);
             }

@@ -23,6 +23,9 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 
+		<!-- Short-window navigation fixture; the ordinary sample stays unchanged. -->
+		<DefineConstants Condition="'$(NavigationOverflowSample)' == 'true'">$(DefineConstants);ASHELL_NAVIGATION_OVERFLOW_SAMPLE</DefineConstants>
+
 		<UseMaterial3>true</UseMaterial3>
 
 		<!-- Enable XAML source generation for faster build times and improved performance.

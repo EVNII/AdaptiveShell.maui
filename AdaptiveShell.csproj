@@ -27,8 +27,8 @@
 
 		<!-- NuGet package metadata -->
 		<PackageId>AdaptiveShell.Maui</PackageId>
-		<Version>0.2.2</Version>
-		<PackageReleaseNotes>Fix dynamic navigation updates and page ownership, preserve group landing and repeated selection, clean up native lifecycles and default colors, and align AndroidX dependencies. Mac Catalyst requires version 18 or later.</PackageReleaseNotes>
+		<Version>0.2.3</Version>
+		<PackageReleaseNotes>Make Android navigation overflow responsive to measured content and available space: vertically scroll the navigation rail and group drawer, and horizontally scroll compact bottom navigation. Preserve width-based layout selection and keep the selected bottom item visible.</PackageReleaseNotes>
 		<Authors>EVNII</Authors>
 		<Description>Adaptive shell navigation for .NET MAUI: sidebar, rail and bottom navigation that adapt to platform, window size and navigation groups.</Description>
 		<PackageTags>maui;navigation;shell;adaptive;sidebar</PackageTags>
@@ -87,6 +87,7 @@
 	</ItemGroup>
 
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+		<AndroidResource Include="Resources\Layout\adaptive_shell_navigation_rail.xml" />
 		<AndroidResource Include="Resources\Drawable\material_symbols_menu_24.xml" />
 		<AndroidResource Include="Resources\Drawable\material_symbols_menu_open_24.xml" />
 		<AndroidResource Include="Resources\Drawable\material_symbols_arrow_back_24.xml" />
